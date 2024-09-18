@@ -14,7 +14,7 @@
 #define MONITOR_CENTER_H (monitorinfo.rcMonitor.left + monitorinfo.rcMonitor.right)/2
 #define MONITOR_CENTER_V (monitorinfo.rcMonitor.top + monitorinfo.rcMonitor.bottom)/2
 
-#define WORLD_SIZE 256
+#define WORLD_SIZE 32
 
 #define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/2.0)
 
@@ -46,18 +46,18 @@ typedef struct {
     float focal_point;
 } Camera;
 
-typedef struct Octant {
-    struct Octant* octants;
+typedef struct Octree {
+    struct Octree* octants;
     int colour;
-    char occupancy;
-} Octant;
+    unsigned char occupancy;
+} Octree;
 
 typedef struct {
     Point3 pos;
     float mx, my, mz;
 } Ray;
 
-Octant world;
+Octree world;
 Camera camera;
 
 int running;
@@ -148,25 +148,25 @@ void update() {
     if (camera.pos.z < -(float)WORLD_SIZE) camera.pos.z = -(float)WORLD_SIZE;
 
     if (up_arrow) {
-        camera.pitch += 0.0349066;
+        camera.pitch += 0.0698132;
         if (camera.pitch > 1.5708) camera.pitch = 1.5708;
         camera.cos_pitch = cos(camera.pitch);
         camera.sin_pitch = sin(camera.pitch);
     }
     if (down_arrow) {
-        camera.pitch -= 0.0349066;
+        camera.pitch -= 0.0698132;
         if (camera.pitch < -1.5708) camera.pitch = -1.5708;
         camera.cos_pitch = cos(camera.pitch);
         camera.sin_pitch = sin(camera.pitch);
     }
     if (right_arrow) {
-        camera.yaw += 0.0349066;
+        camera.yaw += 0.0698132;
         if (camera.yaw > 3.14159) camera.yaw -= 6.28319;
         camera.cos_yaw = cos(camera.yaw);
         camera.sin_yaw = sin(camera.yaw);
     }
     if (left_arrow) {
-        camera.yaw -= 0.0349066;
+        camera.yaw -= 0.0698132;
         if (camera.yaw < -3.14159) camera.yaw += 6.28319;
         camera.cos_yaw = cos(camera.yaw);
         camera.sin_yaw = sin(camera.yaw);
@@ -226,41 +226,38 @@ void next_edge(Ray* ray, int size) {
 Point3 translate_ray(Ray* ray, int size) {
     Point3 difference;
 
-    if (ray->pos.x == 0.0) {
-        if (ray->mx == 0.0)
-            difference.x = size;
-        else
-            difference.x = sign(ray->mx);
-    } else difference.x = sign(ray->pos.x)*(float)size;
+    difference.x =
+        (ray->pos.x == 0.0) ?
+            ((ray->mx == 0.0) ?
+                size
+            :
+                sign(ray->mx))*(float)size
+        :
+            sign(ray->pos.x)*(float)size;
 
-    if (ray->pos.y == 0.0) {
-        if (ray->my == 0.0)
-            difference.y = size;
-        else
-            difference.y = sign(ray->my);
-    } else difference.y = sign(ray->pos.y)*(float)size;
+    difference.y =
+        (ray->pos.y == 0.0) ?
+            ((ray->my == 0.0) ?
+                size
+            :
+                sign(ray->my))*(float)size
+        :
+            sign(ray->pos.y)*(float)size;
 
-    if (ray->pos.z == 0.0) {
-        if (ray->mz == 0.0)
-            difference.z = size;
-        else
-            difference.z = sign(ray->mz);
-    } else difference.z = sign(ray->pos.z)*(float)size;
+    difference.z =
+        (ray->pos.z == 0.0) ?
+            ((ray->mz == 0.0) ?
+                size
+            :
+                sign(ray->mz))*(float)size
+        :
+            sign(ray->pos.z)*(float)size;
 
     ray->pos.x -= difference.x;
     ray->pos.y -= difference.y;
     ray->pos.z -= difference.z;
 
     return difference;
-}
-
-char index_from_sub_octant(unsigned char sub_octant) {
-    char count = 0;
-    while (sub_octant != 0) {
-        sub_octant >>= 1;
-        count++;
-    }
-    return count-1;
 }
 
 extern inline int colour_from_ray(Ray ray) {
@@ -275,7 +272,19 @@ extern inline int colour_from_ray(Ray ray) {
     }
 }
 
-unsigned char find_sub_octant(Ray ray) {
+extern inline unsigned char find_octant_index(Ray ray) {
+    if (ray.pos.x == 0.0) ray.pos.x = ray.mx;
+    if (ray.pos.y == 0.0) ray.pos.y = ray.my;
+    if (ray.pos.z == 0.0) ray.pos.z = ray.mz;
+
+    unsigned char index = 0;
+    if (ray.pos.x < 0.0) index += 1;
+    if (ray.pos.y < 0.0) index += 2;
+    if (ray.pos.z < 0.0) index += 4;
+    return index;
+}
+
+extern inline unsigned char find_octant(Ray ray) {
     if (ray.pos.x == 0.0) ray.pos.x = ray.mx;
     if (ray.pos.y == 0.0) ray.pos.y = ray.my;
     if (ray.pos.z == 0.0) ray.pos.z = ray.mz;
@@ -287,18 +296,18 @@ unsigned char find_sub_octant(Ray ray) {
     return octant;
 }
 
-int next_voxel_colour(Ray* ray, Octant octant, int size) {
-
+int next_voxel_colour(Ray* ray, Octree octree, int size) {
     if (out_of_bounds(ray->pos)) return 0;
 
-    unsigned char sub_octant = find_sub_octant(*ray);
+    unsigned char octant = find_octant(*ray);
 
-    if (octant.occupancy & sub_octant && size == 1) {
-        //return octant.octants[index_from_sub_octant(sub_octant)].colour;
+    if (octree.occupancy & octant && size == 1) {
+        //return octree.octants[index_from_octant(octant)].colour;
         return colour_from_ray(*ray);
-    } else if (octant.occupancy & sub_octant) {
+    } else if (octree.occupancy & octant) {
+        unsigned char octant_index = find_octant_index(*ray);
         Point3 difference = translate_ray(ray, size>>1);
-        int colour = next_voxel_colour(ray, octant.octants[index_from_sub_octant(sub_octant)], size >> 1);
+        int colour = next_voxel_colour(ray, octree.octants[octant_index], size >> 1);
         ray->pos.x += difference.x;
         ray->pos.y += difference.y;
         ray->pos.z += difference.z;
@@ -338,7 +347,7 @@ extern inline Ray rotate_pitch(Ray ray, Camera c) {
     return new_ray;
 }
 
-int render_pixel(int screen_x, int screen_y, Octant w, Camera c) {
+int render_pixel(int screen_x, int screen_y, Octree w, Camera c) {
 
     Ray ray;
 
@@ -365,7 +374,7 @@ int render_pixel(int screen_x, int screen_y, Octant w, Camera c) {
     return colour;
 }
 
-void render_world(Octant w, Camera c) {
+void render_world(Octree w, Camera c) {
     for (int y = 0; y < GAME_RES_HEIGHT; y++) {
         for (int x = 0; x < GAME_RES_WIDTH; x++) {
             pixel(x, y, render_pixel(x, y, w, c));
@@ -378,32 +387,73 @@ void render(HDC hdc) {
     StretchDIBits(hdc, 0, 0, windowWidth, windowHeight, 0, 0, GAME_RES_WIDTH, GAME_RES_HEIGHT, buffer.memory, &buffer.bitmapInfo, DIB_RGB_COLORS, SRCCOPY);
 }
 
-Octant fill_octant(int size, int fill) {
-    Octant octant = (Octant){malloc(8*sizeof(Octant)), 0, 0};
-
-    for (int i = 0; i < 8; i++) {
-        if (size == 1) {
-            if (fill)
-                octant.octants[i] = (Octant){0, 0xff, 1};
-            else
-                octant.octants[i] = (Octant){0, 0, 0};
-        } else {
-            if ((i == 2 || i == 3 || i == 6 || i == 7) && size == WORLD_SIZE)
-                octant.octants[i] = fill_octant(size>>1, 1);
-            else
-                octant.octants[i] = fill_octant(size>>1, fill);
-        }
-        if (octant.octants[i].occupancy) octant.occupancy |= 1 << i;
-    }
+void fill_voxel(Octree* octree, int size, int x, int y, int z, int colour) {
     
-    return octant;
+    char octant_index = 0;
+    unsigned char octant = 1;
+
+    if (x < size) {
+        octant_index += 1;
+        octant <<= 1;
+    }
+    if (y < size) {
+        octant_index += 2;
+        octant <<= 2;
+    }
+    if (z < size) {
+        octant_index += 4;
+        octant <<= 4;
+    }
+
+    if (size == 1) {
+        octree->octants[octant_index].occupancy = 1;
+        octree->octants[octant_index].colour = colour;
+        octree->occupancy |= octant;
+        return;
+    }
+
+    if (x >= size) x -= size;
+    if (y >= size) y -= size;
+    if (z >= size) z -= size;
+
+    fill_voxel(&octree->octants[octant_index], size >> 1, x, y, z, colour);
+    octree->occupancy |= octant;
+}
+
+void fill_to_height(Octree* octree, int size, int x, int z, int height) {
+    for (int y = 0; y <= height; y++) {
+        fill_voxel(octree, size, x, y, z, 0xff);
+    }
+}
+
+Octree empty_octree(int size) {
+    Octree octree = {malloc(8*sizeof(Octree)), 0, 0};
+    for (int i = 0; i < 8; i++) {
+        if (size == 1)
+            octree.octants[i] = (Octree){0, 0, 0};
+        else
+            octree.octants[i] = empty_octree(size >> 1);
+    }
+    return octree;
+}
+
+Octree fill_world() {
+    Octree world = empty_octree(WORLD_SIZE);
+
+    for (int x = 0; x < WORLD_SIZE*2; x++) {
+        for (int z = 0; z < WORLD_SIZE*2; z++) {
+            fill_voxel(&world, WORLD_SIZE, x, (x+z)>>1, z, 0xff);
+        }
+    }
+
+    return world;
 }
 
 int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, int CmdShow) {
 
-    world = fill_octant(WORLD_SIZE, 0);
+    world = fill_world();
 
-    camera = (Camera){(Point3){0,0,0.1}, 0, 0, 1, 0, 1, 0, 2.0944, 0};
+    camera = (Camera){(Point3){-3.5, 1, 3.5}, -1.5708, 0, 0, -1, 1, 0, 2.0944, 0};
     camera.focal_point = GAME_RES_WIDTH/2/tan(camera.fov/2)/SCREEN_SCALING_FACTOR;
 
     buffer.bitmapInfo.bmiHeader.biSize = sizeof(buffer.bitmapInfo.bmiHeader);
