@@ -6,8 +6,8 @@
 #define INITIAL_WINDOW_WIDTH 640
 #define INITIAL_WINDOW_HEIGHT 480
 
-#define GAME_RES_WIDTH  384
-#define GAME_RES_HEIGHT 240
+#define GAME_RES_WIDTH  320
+#define GAME_RES_HEIGHT 180
 #define GAME_BPP        32
 #define GAME_BITMAP_MEM_SIZE (GAME_RES_WIDTH * GAME_RES_HEIGHT * (GAME_BPP / 8))
 
@@ -67,6 +67,11 @@ MONITORINFO monitorinfo = {sizeof(MONITORINFO)};
 RECT windowRect;
 int lastSizeMsg = 0;
 
+float ray_x_pos_array[GAME_RES_WIDTH];
+float ray_y_pos_array[GAME_RES_HEIGHT];
+
+Ray start_rays[GAME_RES_WIDTH*GAME_RES_HEIGHT];
+
 void render();
 
 LRESULT CALLBACK WndProc(HWND WindowHandle, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -105,6 +110,60 @@ extern inline int out_of_bounds(Point3 p) {
         || p.z >= WORLD_SIZE || p.z <= -WORLD_SIZE;
 }
 
+extern inline Ray rotate_yaw(Ray ray, Camera c) {
+    Ray new_ray;
+
+    new_ray.pos.x = ray.pos.x*c.cos_yaw - ray.pos.z*c.sin_yaw;
+    new_ray.pos.y = ray.pos.y;
+    new_ray.pos.z = ray.pos.x*c.sin_yaw + ray.pos.z*c.cos_yaw;
+
+    new_ray.mx = ray.mx*c.cos_yaw - ray.mz*c.sin_yaw;
+    new_ray.my = ray.my;
+    new_ray.mz = ray.mz*c.cos_yaw + ray.mx*c.sin_yaw;
+
+    return new_ray;
+}
+
+extern inline Ray rotate_pitch(Ray ray, Camera c) {
+    Ray new_ray;
+
+    new_ray.pos.x = ray.pos.x;
+    new_ray.pos.y = ray.pos.y*c.cos_pitch;
+    new_ray.pos.z = ray.pos.y*c.sin_pitch;
+
+    new_ray.mx = ray.mx;
+    new_ray.my = ray.my*c.cos_pitch - ray.mz*c.sin_pitch;
+    new_ray.mz = ray.mz*c.cos_pitch + ray.my*c.sin_pitch;
+
+    return new_ray;
+}
+
+void update_start_rays(char camera_moved_xz, char camera_moved_y, char camera_rotated) {
+    for (int y = 0; y < GAME_RES_HEIGHT; y++) {
+        for (int x = 0; x < GAME_RES_WIDTH; x++) {
+
+            if (camera_rotated) {
+                start_rays[x + y*GAME_RES_WIDTH].pos.x = ray_x_pos_array[x];
+                start_rays[x + y*GAME_RES_WIDTH].pos.y = ray_y_pos_array[y];
+
+                start_rays[x + y*GAME_RES_WIDTH].mx = ray_x_pos_array[x];
+                start_rays[x + y*GAME_RES_WIDTH].my = ray_y_pos_array[y];
+                start_rays[x + y*GAME_RES_WIDTH].mz = -camera.focal_point;
+
+                start_rays[x + y*GAME_RES_WIDTH] = rotate_pitch(start_rays[x + y*GAME_RES_WIDTH], camera);
+                start_rays[x + y*GAME_RES_WIDTH] = rotate_yaw(start_rays[x + y*GAME_RES_WIDTH], camera);
+            }
+            if (camera_moved_xz || camera_rotated) {
+                start_rays[x + y*GAME_RES_WIDTH].pos.x = start_rays[x + y*GAME_RES_WIDTH].mx + camera.pos.x;
+                start_rays[x + y*GAME_RES_WIDTH].pos.z = start_rays[x + y*GAME_RES_WIDTH].mz + camera.pos.z;
+            }
+            if (camera_moved_y || camera_rotated) {
+                start_rays[x + y*GAME_RES_WIDTH].pos.y = start_rays[x + y*GAME_RES_WIDTH].my + camera.pos.y;
+            }
+        }
+    }
+}
+
 void update() {
     short escape_key = GetAsyncKeyState(VK_ESCAPE);
     short w = GetAsyncKeyState('W');
@@ -118,27 +177,71 @@ void update() {
     short right_arrow = GetAsyncKeyState(VK_RIGHT);
     short left_arrow = GetAsyncKeyState(VK_LEFT);
 
+    char camera_moved_xz = 0;
+    char camera_moved_y = 0;
+    char camera_rotated = 0;
+
     float v = 0.2;
 
     if (escape_key) SendMessageA(windowHandle, WM_SIZE, 0, 0);
+
+    if (up_arrow) {
+        camera.pitch += 0.0698132;
+        camera_rotated = 1;
+        if (camera.pitch > 1.5708) camera.pitch = 1.5708;
+        camera.cos_pitch = cos(camera.pitch);
+        camera.sin_pitch = sin(camera.pitch);
+    }
+    if (down_arrow) {
+        camera.pitch -= 0.0698132;
+        camera_rotated = 1;
+        if (camera.pitch < -1.5708) camera.pitch = -1.5708;
+        camera.cos_pitch = cos(camera.pitch);
+        camera.sin_pitch = sin(camera.pitch);
+    }
+    if (right_arrow) {
+        camera.yaw += 0.0698132;
+        camera_rotated = 1;
+        if (camera.yaw > 3.14159) camera.yaw -= 6.28319;
+        camera.cos_yaw = cos(camera.yaw);
+        camera.sin_yaw = sin(camera.yaw);
+    }
+    if (left_arrow) {
+        camera.yaw -= 0.0698132;
+        camera_rotated = 1;
+        if (camera.yaw < -3.14159) camera.yaw += 6.28319;
+        camera.cos_yaw = cos(camera.yaw);
+        camera.sin_yaw = sin(camera.yaw);
+    }
+
     if (w) {
         camera.pos.x += v*camera.sin_yaw;
         camera.pos.z += -v*camera.cos_yaw;
+        camera_moved_xz = 1;
     }
     if (a) {
         camera.pos.x += -v*camera.cos_yaw;
         camera.pos.z += -v*camera.sin_yaw;
+        camera_moved_xz = 1;
     }
     if (s) {
         camera.pos.x += -v*camera.sin_yaw;
         camera.pos.z += v*camera.cos_yaw;
+        camera_moved_xz = 1;
     }
     if (d) {
         camera.pos.x += v*camera.cos_yaw;
         camera.pos.z += v*camera.sin_yaw;
+        camera_moved_xz = 1;
     }
-    if (space_key) camera.pos.y += v;
-    if (shift_key) camera.pos.y -= v;
+    if (space_key) {
+        camera.pos.y += v;
+        camera_moved_y = 1;
+    }
+    if (shift_key) {
+        camera.pos.y -= v;
+        camera_moved_y = 1;
+    }
 
     if (camera.pos.x > (float)WORLD_SIZE) camera.pos.x = (float)WORLD_SIZE;
     if (camera.pos.x < -(float)WORLD_SIZE) camera.pos.x = -(float)WORLD_SIZE;
@@ -147,30 +250,9 @@ void update() {
     if (camera.pos.z > (float)WORLD_SIZE) camera.pos.z = (float)WORLD_SIZE;
     if (camera.pos.z < -(float)WORLD_SIZE) camera.pos.z = -(float)WORLD_SIZE;
 
-    if (up_arrow) {
-        camera.pitch += 0.0698132;
-        if (camera.pitch > 1.5708) camera.pitch = 1.5708;
-        camera.cos_pitch = cos(camera.pitch);
-        camera.sin_pitch = sin(camera.pitch);
-    }
-    if (down_arrow) {
-        camera.pitch -= 0.0698132;
-        if (camera.pitch < -1.5708) camera.pitch = -1.5708;
-        camera.cos_pitch = cos(camera.pitch);
-        camera.sin_pitch = sin(camera.pitch);
-    }
-    if (right_arrow) {
-        camera.yaw += 0.0698132;
-        if (camera.yaw > 3.14159) camera.yaw -= 6.28319;
-        camera.cos_yaw = cos(camera.yaw);
-        camera.sin_yaw = sin(camera.yaw);
-    }
-    if (left_arrow) {
-        camera.yaw -= 0.0698132;
-        if (camera.yaw < -3.14159) camera.yaw += 6.28319;
-        camera.cos_yaw = cos(camera.yaw);
-        camera.sin_yaw = sin(camera.yaw);
-    }
+    if (camera_moved_xz
+            || camera_moved_y
+            || camera_rotated) update_start_rays(camera_moved_xz, camera_moved_y, camera_rotated);
 }
 
 extern inline float sign(float num) {
@@ -260,12 +342,17 @@ Point3 translate_ray(Ray* ray, int size) {
     return difference;
 }
 
+int is_integer(float num) {
+    int truncated = (int)num;
+    return num == truncated;
+}
+
 extern inline int colour_from_ray(Ray ray) {
-    if (ray.pos.x == 0.0) {
+    if (is_integer(ray.pos.x)) {// == 0.0 || ray.pos.x == 1.0 || ray.pos.x == 2.0) {
         return (ray.mx >= 0.0) ? 0xff0000 : 0xffff;
-    } else if (ray.pos.y == 0.0) {
+    } else if (is_integer(ray.pos.y)) {// == 0.0 || ray.pos.y == 1.0 || ray.pos.y == 2.0) {
         return (ray.my >= 0.0) ? 0xff00 : 0xff00ff;
-    } else if (ray.pos.z == 0.0) {
+    } else if (is_integer(ray.pos.z)) {// == 0.0 || ray.pos.z == 1.0 || ray.pos.z == 2.0) {
         return (ray.mz >= 0.0) ? 0xff : 0xffff00;
     } else {
         return 0xffffff;
@@ -319,51 +406,9 @@ int next_voxel_colour(Ray* ray, Octree octree, int size) {
     }
 }
 
-extern inline Ray rotate_yaw(Ray ray, Camera c) {
-    Ray new_ray;
-
-    new_ray.pos.x = ray.pos.x*c.cos_yaw - ray.pos.z*c.sin_yaw;
-    new_ray.pos.y = ray.pos.y;
-    new_ray.pos.z = ray.pos.x*c.sin_yaw + ray.pos.z*c.cos_yaw;
-
-    new_ray.mx = ray.mx*c.cos_yaw - ray.mz*c.sin_yaw;
-    new_ray.my = ray.my;
-    new_ray.mz = ray.mz*c.cos_yaw + ray.mx*c.sin_yaw;
-
-    return new_ray;
-}
-
-extern inline Ray rotate_pitch(Ray ray, Camera c) {
-    Ray new_ray;
-
-    new_ray.pos.x = ray.pos.x;
-    new_ray.pos.y = ray.pos.y*c.cos_pitch;
-    new_ray.pos.z = ray.pos.y*c.sin_pitch;
-
-    new_ray.mx = ray.mx;
-    new_ray.my = ray.my*c.cos_pitch - ray.mz*c.sin_pitch;
-    new_ray.mz = ray.mz*c.cos_pitch + ray.my*c.sin_pitch;
-
-    return new_ray;
-}
-
 int render_pixel(int screen_x, int screen_y, Octree w, Camera c) {
 
-    Ray ray;
-
-    ray.pos.x = (float)(screen_x - GAME_RES_WIDTH/2)/SCREEN_SCALING_FACTOR;
-    ray.pos.y = (float)(screen_y - GAME_RES_HEIGHT/2)/SCREEN_SCALING_FACTOR;
-
-    ray.mx = ray.pos.x;
-    ray.my = ray.pos.y;
-    ray.mz = -camera.focal_point;
-
-    ray = rotate_pitch(ray, c);
-    ray = rotate_yaw(ray, c);
-
-    ray.pos.x += camera.pos.x;
-    ray.pos.y += camera.pos.y;
-    ray.pos.z += camera.pos.z;
+    Ray ray = start_rays[screen_x + screen_y*GAME_RES_WIDTH];
 
     int colour = next_voxel_colour(&ray, w, WORLD_SIZE);
 
@@ -420,9 +465,9 @@ void fill_voxel(Octree* octree, int size, int x, int y, int z, int colour) {
     octree->occupancy |= octant;
 }
 
-void fill_to_height(Octree* octree, int size, int x, int z, int height) {
+void fill_to_height(Octree* octree, int x, int z, int height) {
     for (int y = 0; y <= height; y++) {
-        fill_voxel(octree, size, x, y, z, 0xff);
+        fill_voxel(octree, WORLD_SIZE, x, y, z, 0xff);
     }
 }
 
@@ -442,19 +487,31 @@ Octree fill_world() {
 
     for (int x = 0; x < WORLD_SIZE*2; x++) {
         for (int z = 0; z < WORLD_SIZE*2; z++) {
-            fill_voxel(&world, WORLD_SIZE, x, (x+z)>>1, z, 0xff);
+            fill_to_height(&world, x, z, (int)(((float)WORLD_SIZE/4)*sin(x*4/(float)WORLD_SIZE) + ((float)WORLD_SIZE/4)*sin(z*4/(float)WORLD_SIZE) + (float)WORLD_SIZE/2));
         }
     }
 
     return world;
 }
 
-int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, int CmdShow) {
+void fill_ray_pos_arrays() {
+    for (int x = 0; x < GAME_RES_WIDTH; x++) {
+        ray_x_pos_array[x] = (float)(x - GAME_RES_WIDTH/2)/SCREEN_SCALING_FACTOR;
+    }
+    for (int y = 0; y < GAME_RES_WIDTH; y++) {
+        ray_y_pos_array[y] = (float)(y - GAME_RES_HEIGHT/2)/SCREEN_SCALING_FACTOR;
+    }
+}
 
+int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, int CmdShow) {
+
+    fill_ray_pos_arrays();
     world = fill_world();
 
     camera = (Camera){(Point3){-3.5, 1, 3.5}, -1.5708, 0, 0, -1, 1, 0, 2.0944, 0};
     camera.focal_point = GAME_RES_WIDTH/2/tan(camera.fov/2)/SCREEN_SCALING_FACTOR;
+
+    update_start_rays(1, 1, 1);
 
     buffer.bitmapInfo.bmiHeader.biSize = sizeof(buffer.bitmapInfo.bmiHeader);
     buffer.bitmapInfo.bmiHeader.biWidth = GAME_RES_WIDTH;
