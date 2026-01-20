@@ -1,24 +1,27 @@
 #include <stdio.h>
+#include <sys/types.h>
 #include <windows.h>
 #include <math.h>
 #include <time.h>
 
 #define INITIAL_WINDOW_WIDTH 640
-#define INITIAL_WINDOW_HEIGHT 480
+#define INITIAL_WINDOW_HEIGHT 360
 
-#define GAME_RES_WIDTH  320
-#define GAME_RES_HEIGHT 180
+#define GAME_RES_WIDTH  640
+#define GAME_RES_HEIGHT 360
 #define GAME_BPP        32
 #define GAME_BITMAP_MEM_SIZE (GAME_RES_WIDTH * GAME_RES_HEIGHT * (GAME_BPP / 8))
 
 #define MONITOR_CENTER_H (monitorinfo.rcMonitor.left + monitorinfo.rcMonitor.right)/2
 #define MONITOR_CENTER_V (monitorinfo.rcMonitor.top + monitorinfo.rcMonitor.bottom)/2
 
-#define WORLD_SIZE 32
+#define WORLD_SIZE 64
 
 #define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/2.0)
 
 #define pixel(x, y, colour) if (0 <= x && x < GAME_RES_WIDTH && 0 <= y && y < GAME_RES_HEIGHT) *((int*)buffer.memory + x + y*GAME_RES_WIDTH) = colour
+
+#define SKY 0x87CEEB
 
 int windowWidth = INITIAL_WINDOW_WIDTH, windowHeight = INITIAL_WINDOW_HEIGHT;
 int monitorWidth, monitorHeight;
@@ -53,8 +56,14 @@ typedef struct Octree {
 } Octree;
 
 typedef struct {
+    unsigned char r, g, b;
+} Colour;
+
+typedef struct {
     Point3 pos;
-    float mx, my, mz;
+    float mx, my, mz, inv_mx, inv_my, inv_mz;
+    int collisions;
+    Colour colour;
 } Ray;
 
 Octree world;
@@ -62,6 +71,8 @@ Camera camera;
 
 int running;
 Bitmap buffer;
+int initial_window_width;
+int initial_window_height;
 HWND windowHandle;
 MONITORINFO monitorinfo = {sizeof(MONITORINFO)};
 RECT windowRect;
@@ -71,6 +82,10 @@ float ray_x_pos_array[GAME_RES_WIDTH];
 float ray_y_pos_array[GAME_RES_HEIGHT];
 
 Ray start_rays[GAME_RES_WIDTH*GAME_RES_HEIGHT];
+
+Point3 world_space_translation;
+
+float light_height;
 
 void render();
 
@@ -89,10 +104,10 @@ LRESULT CALLBACK WndProc(HWND WindowHandle, UINT msg, WPARAM wParam, LPARAM lPar
                     break;
                 default:
                     SetWindowLongPtrA(windowHandle, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
-                    windowWidth = INITIAL_WINDOW_WIDTH;
-                    windowHeight = INITIAL_WINDOW_HEIGHT;
+                    windowWidth = windowRect.right - windowRect.left;
+                    windowHeight = windowRect.bottom - windowRect.top;
                     if (lastSizeMsg) {
-                        SetWindowPos(windowHandle, HWND_TOP, MONITOR_CENTER_H - INITIAL_WINDOW_WIDTH/2, MONITOR_CENTER_V - INITIAL_WINDOW_HEIGHT/2, INITIAL_WINDOW_WIDTH, INITIAL_WINDOW_HEIGHT, SWP_FRAMECHANGED);
+                        SetWindowPos(windowHandle, HWND_TOP, windowRect.left, windowRect.top, windowWidth, windowHeight, SWP_FRAMECHANGED);
                     }
             }
             lastSizeMsg = wParam;
@@ -102,12 +117,6 @@ LRESULT CALLBACK WndProc(HWND WindowHandle, UINT msg, WPARAM wParam, LPARAM lPar
             return DefWindowProc(WindowHandle, msg, wParam, lParam);
     }
     return 0;
-}
-
-extern inline int out_of_bounds(Point3 p) {
-    return p.x >= WORLD_SIZE || p.x <= -WORLD_SIZE
-        || p.y >= WORLD_SIZE || p.y <= -WORLD_SIZE
-        || p.z >= WORLD_SIZE || p.z <= -WORLD_SIZE;
 }
 
 extern inline Ray rotate_yaw(Ray ray, Camera c) {
@@ -121,6 +130,10 @@ extern inline Ray rotate_yaw(Ray ray, Camera c) {
     new_ray.my = ray.my;
     new_ray.mz = ray.mz*c.cos_yaw + ray.mx*c.sin_yaw;
 
+    new_ray.inv_mx = 1.0f / new_ray.mx;
+    new_ray.inv_my = 1.0f / new_ray.my;
+    new_ray.inv_mz = 1.0f / new_ray.mz;
+
     return new_ray;
 }
 
@@ -132,8 +145,8 @@ extern inline Ray rotate_pitch(Ray ray, Camera c) {
     new_ray.pos.z = ray.pos.y*c.sin_pitch;
 
     new_ray.mx = ray.mx;
-    new_ray.my = ray.my*c.cos_pitch - ray.mz*c.sin_pitch;
-    new_ray.mz = ray.mz*c.cos_pitch + ray.my*c.sin_pitch;
+    new_ray.my = new_ray.pos.y - ray.mz*c.sin_pitch;
+    new_ray.mz = ray.mz*c.cos_pitch + new_ray.pos.z;
 
     return new_ray;
 }
@@ -141,7 +154,6 @@ extern inline Ray rotate_pitch(Ray ray, Camera c) {
 void update_start_rays(char camera_moved_xz, char camera_moved_y, char camera_rotated) {
     for (int y = 0; y < GAME_RES_HEIGHT; y++) {
         for (int x = 0; x < GAME_RES_WIDTH; x++) {
-
             if (camera_rotated) {
                 start_rays[x + y*GAME_RES_WIDTH].pos.x = ray_x_pos_array[x];
                 start_rays[x + y*GAME_RES_WIDTH].pos.y = ray_y_pos_array[y];
@@ -181,7 +193,10 @@ void update() {
     char camera_moved_y = 0;
     char camera_rotated = 0;
 
-    float v = 0.2;
+    light_height -= 0.2f;
+    if (light_height <= -WORLD_SIZE) light_height += WORLD_SIZE*2.0f;
+
+    float v = 0.5f;
 
     if (escape_key) SendMessageA(windowHandle, WM_SIZE, 0, 0);
 
@@ -256,84 +271,70 @@ void update() {
 }
 
 extern inline float sign(float num) {
-    return (num == 0.0) ? NAN : ((num > 0.0) ? 1.0 : -1.0);
+    return (num >= 0.0f) ? 1.0f : -1.0f;
 }
 
-void next_edge(Ray* ray, int size) {
+void next_edge(Ray* ray, int size, unsigned char octant) {
 
     float x_diff;
     float y_diff;
     float z_diff;
 
-    if (ray->mx != 0.0) {
-        float pos_x = (ray->pos.x == 0.0) ? 0 : sign(ray->pos.x);
-        float next_edge_x = pos_x + sign(ray->mx);
-        if (next_edge_x > 1.0) next_edge_x--;
-        if (next_edge_x < -1.0) next_edge_x++;
-        next_edge_x *= (float)size;
-        x_diff = fabs((next_edge_x - ray->pos.x) / ray->mx);
+    if (ray->mx != 0.0f) {
+        int next_edge_x = ((((octant & 1) == 0) ? 1 : -1) + (int)sign(ray->mx));
+        if (next_edge_x > 1) next_edge_x = 1;
+        else if (next_edge_x < -1) next_edge_x = -1;
+        x_diff = fabs((next_edge_x*(float)size - ray->pos.x));
     } else {
         x_diff = INFINITY;
     }
 
-    if (ray->my != 0.0) {
-        float pos_y = (ray->pos.y == 0.0) ? 0 : sign(ray->pos.y);
-        float next_edge_y = pos_y + sign(ray->my);
-        if (next_edge_y > 1.0) next_edge_y--;
-        if (next_edge_y < -1.0) next_edge_y++;
-        next_edge_y *= (float)size;
-        y_diff = fabs((next_edge_y - ray->pos.y) / ray->my);
+    if (ray->my != 0.0f) {
+        int next_edge_y = ((((octant & 2) == 0) ? 1 : -1) + (int)sign(ray->my));
+        if (next_edge_y > 1) next_edge_y = 1;
+        else if (next_edge_y < -1) next_edge_y = -1;
+        y_diff = fabs((next_edge_y*(float)size - ray->pos.y));
     } else {
         y_diff = INFINITY;
     }
 
-    if (ray->mz != 0.0) {
-        float pos_z = (ray->pos.z == 0.0) ? 0 : sign(ray->pos.z);
-        float next_edge_z = pos_z + sign(ray->mz);
-        if (next_edge_z > 1.0) next_edge_z--;
-        if (next_edge_z < -1.0) next_edge_z++;
-        next_edge_z *= (float)size;
-        z_diff = fabs((next_edge_z - ray->pos.z) / ray->mz);
+    if (ray->mz != 0.0f) {
+        int next_edge_z = ((((octant & 4) == 0) ? 1 : -1) + (int)sign(ray->mz));
+        if (next_edge_z > 1) next_edge_z = 1;
+        else if (next_edge_z < -1) next_edge_z = -1;
+        z_diff = fabs((next_edge_z*(float)size - ray->pos.z));
     } else {
         z_diff = INFINITY;
     }
 
-    float minimum_diff = (x_diff < y_diff) ? ((x_diff < z_diff) ? x_diff:z_diff):((y_diff < z_diff) ? y_diff:z_diff);
+    float x_t_value = fabs(x_diff * ray->inv_mx);
+    float y_t_value = fabs(y_diff * ray->inv_my);
+    float z_t_value = fabs(z_diff * ray->inv_mz);
 
-    ray->pos.x += ray->mx * minimum_diff;
-    ray->pos.y += ray->my * minimum_diff;
-    ray->pos.z += ray->mz * minimum_diff;
+    float minimum_t_value = (x_t_value < y_t_value) ? x_t_value : y_t_value;
+    minimum_t_value = (minimum_t_value < z_t_value) ? minimum_t_value : z_t_value;
+
+    if (minimum_t_value == x_t_value) {
+        ray->pos.x += x_diff * sign(ray->mx);
+        ray->pos.y += ray->my * minimum_t_value;
+        ray->pos.z += ray->mz * minimum_t_value;
+    } else if (minimum_t_value == y_t_value) {
+        ray->pos.x += ray->mx * minimum_t_value;
+        ray->pos.y += y_diff * sign(ray->my);
+        ray->pos.z += ray->mz * minimum_t_value;
+    } else if (minimum_t_value == z_t_value) {
+        ray->pos.x += ray->mx * minimum_t_value;
+        ray->pos.y += ray->my * minimum_t_value;
+        ray->pos.z += z_diff * sign(ray->mz);
+    }
 }
 
-Point3 translate_ray(Ray* ray, int size) {
+Point3 translate_ray(Ray* ray, int size, unsigned char octant) {
     Point3 difference;
 
-    difference.x =
-        (ray->pos.x == 0.0) ?
-            ((ray->mx == 0.0) ?
-                size
-            :
-                sign(ray->mx))*(float)size
-        :
-            sign(ray->pos.x)*(float)size;
-
-    difference.y =
-        (ray->pos.y == 0.0) ?
-            ((ray->my == 0.0) ?
-                size
-            :
-                sign(ray->my))*(float)size
-        :
-            sign(ray->pos.y)*(float)size;
-
-    difference.z =
-        (ray->pos.z == 0.0) ?
-            ((ray->mz == 0.0) ?
-                size
-            :
-                sign(ray->mz))*(float)size
-        :
-            sign(ray->pos.z)*(float)size;
+    difference.x = ((octant & 1) == 0) ? size : -size;
+    difference.y = ((octant & 2) == 0) ? size : -size;
+    difference.z = ((octant & 4) == 0) ? size : -size;
 
     ray->pos.x -= difference.x;
     ray->pos.y -= difference.y;
@@ -342,81 +343,134 @@ Point3 translate_ray(Ray* ray, int size) {
     return difference;
 }
 
+float inv_modulus(float x, float y, float z) {
+    return 1.0f / sqrt(x*x + y*y + z*z);
+}
+
 int is_integer(float num) {
     int truncated = (int)num;
     return num == truncated;
 }
 
-extern inline int colour_from_ray(Ray ray) {
-    if (is_integer(ray.pos.x)) {// == 0.0 || ray.pos.x == 1.0 || ray.pos.x == 2.0) {
-        return (ray.mx >= 0.0) ? 0xff0000 : 0xffff;
-    } else if (is_integer(ray.pos.y)) {// == 0.0 || ray.pos.y == 1.0 || ray.pos.y == 2.0) {
-        return (ray.my >= 0.0) ? 0xff00 : 0xff00ff;
-    } else if (is_integer(ray.pos.z)) {// == 0.0 || ray.pos.z == 1.0 || ray.pos.z == 2.0) {
-        return (ray.mz >= 0.0) ? 0xff : 0xffff00;
+Point3 get_normal(Ray ray) {
+    if (is_integer(ray.pos.x)) {
+        return (ray.mx >= 0.0) ? (Point3){-1, 0, 0} : (Point3){1, 0, 0};
+    } else if (is_integer(ray.pos.y)) {
+        return (ray.my >= 0.0) ? (Point3){0, -1, 0} : (Point3){0, 1, 0};
+    } else if (is_integer(ray.pos.z)) {
+        return (ray.mz >= 0.0) ? (Point3){0, 0, -1} : (Point3){0, 0, 1};
     } else {
-        return 0xffffff;
+        return (Point3){0, 0, 0};
     }
 }
 
-extern inline unsigned char find_octant_index(Ray ray) {
-    if (ray.pos.x == 0.0) ray.pos.x = ray.mx;
-    if (ray.pos.y == 0.0) ray.pos.y = ray.my;
-    if (ray.pos.z == 0.0) ray.pos.z = ray.mz;
-
-    unsigned char index = 0;
-    if (ray.pos.x < 0.0) index += 1;
-    if (ray.pos.y < 0.0) index += 2;
-    if (ray.pos.z < 0.0) index += 4;
-    return index;
+extern inline float colour_from_ray(Ray ray) {
+    Point3 normal = get_normal(ray);
+    float dot_product = (light_height - ray.pos.x + world_space_translation.x) * normal.x + (2 - ray.pos.y + world_space_translation.y) * normal.y + (light_height - ray.pos.z + world_space_translation.z) * normal.z;
+    dot_product *= inv_modulus((light_height - ray.pos.x + world_space_translation.x), (2 - ray.pos.y + world_space_translation.y), (light_height - ray.pos.z + world_space_translation.z));
+    return dot_product * 0.5 + 0.5;
 }
 
-extern inline unsigned char find_octant(Ray ray) {
+extern inline Colour scale_Colour(Colour c, float scaler) {
+    c.r = c.r * scaler;
+    c.g = c.g * scaler;
+    c.b = c.b * scaler;
+    return c;
+}
+
+extern inline Colour to_Colour(int colour) {
+    return (Colour){(colour & 0xff0000)>>16, (colour & 0xff00)>>8, colour & 0xff};
+}
+
+extern inline unsigned char find_octant(Ray ray, unsigned char* octant_index) {
     if (ray.pos.x == 0.0) ray.pos.x = ray.mx;
     if (ray.pos.y == 0.0) ray.pos.y = ray.my;
     if (ray.pos.z == 0.0) ray.pos.z = ray.mz;
 
     unsigned char octant = 1;
-    if (ray.pos.x < 0.0) octant <<= 1;
-    if (ray.pos.y < 0.0) octant <<= 2;
-    if (ray.pos.z < 0.0) octant <<= 4;
+    *octant_index = 0;
+    if (ray.pos.x < 0.0) {
+        octant <<= 1;
+        *octant_index += 1;
+    }
+    if (ray.pos.y < 0.0) {
+        octant <<= 2;
+        *octant_index += 2;
+    }
+    if (ray.pos.z < 0.0) {
+        octant <<= 4;
+        *octant_index += 4;
+    }
     return octant;
 }
 
-int next_voxel_colour(Ray* ray, Octree octree, int size) {
-    if (out_of_bounds(ray->pos)) return 0;
+extern inline int out_of_bounds(Ray ray, int size) {
+    return (ray.pos.x > size) || (ray.pos.x < -size)
+        || (ray.pos.x == size && ray.mx > 0) || (ray.pos.x == -size && ray.mx < 0)
+        || (ray.pos.y > size) || (ray.pos.y < -size)
+        || (ray.pos.y == size && ray.my > 0) || (ray.pos.y == -size && ray.my < 0)
+        || (ray.pos.z > size) || (ray.pos.z < -size)
+        || (ray.pos.z == size && ray.mz > 0) || (ray.pos.z == -size && ray.mz < 0);
+}
 
-    unsigned char octant = find_octant(*ray);
+void next_voxel_colour(Ray* ray, Octree* octree, int size) {
+    while (1) {
+        if (out_of_bounds(*ray, WORLD_SIZE)) {
+            ray->collisions++;
+            if (ray->collisions == 1)
+                ray->colour = to_Colour(SKY);
+            return;
+        }
+        if (out_of_bounds(*ray, size)) return;
+        unsigned char octant_index = 0;
+        unsigned char octant = find_octant(*ray, &octant_index);
 
-    if (octree.occupancy & octant && size == 1) {
-        //return octree.octants[index_from_octant(octant)].colour;
-        return colour_from_ray(*ray);
-    } else if (octree.occupancy & octant) {
-        unsigned char octant_index = find_octant_index(*ray);
-        Point3 difference = translate_ray(ray, size>>1);
-        int colour = next_voxel_colour(ray, octree.octants[octant_index], size >> 1);
-        ray->pos.x += difference.x;
-        ray->pos.y += difference.y;
-        ray->pos.z += difference.z;
-        return colour;
-    } else {
-        next_edge(ray, size);
-        if (out_of_bounds(ray->pos)) return 0;
-        return -1;
+        if (octree->occupancy & octant) {
+            if (size == 1) {
+                ray->collisions++;
+                if (ray->collisions == 1) {
+                    ray->colour = to_Colour(octree->octants[octant_index].colour);
+                    ray->colour = scale_Colour(ray->colour, colour_from_ray(*ray));
+                    ray->mx = light_height - ray->pos.x + world_space_translation.x;
+                    ray->my = 2 - ray->pos.y + world_space_translation.y;
+                    ray->mz = light_height - ray->pos.z + world_space_translation.z;
+                    ray->inv_mx = 1.0f / ray->mx;
+                    ray->inv_my = 1.0f / ray->my;
+                    ray->inv_mz = 1.0f / ray->mz;
+                    next_voxel_colour(ray, octree, size);
+                } else if (ray->collisions == 2) {
+                    ray->colour = scale_Colour(ray->colour, 0.5);
+                    return;
+                }
+            }
+
+            Point3 difference = translate_ray(ray, size>>1, octant_index);
+            world_space_translation.x -= difference.x;
+            world_space_translation.y -= difference.y;
+            world_space_translation.z -= difference.z;
+            next_voxel_colour(ray, &(octree->octants[octant_index]), size>>1);
+            ray->pos.x += difference.x;
+            ray->pos.y += difference.y;
+            ray->pos.z += difference.z;
+            world_space_translation.x += difference.x;
+            world_space_translation.y += difference.y;
+            world_space_translation.z += difference.z;
+            if (ray->collisions < 2) continue;
+            return;
+        }
+
+        next_edge(ray, size, octant_index);
     }
 }
 
 int render_pixel(int screen_x, int screen_y, Octree w, Camera c) {
 
     Ray ray = start_rays[screen_x + screen_y*GAME_RES_WIDTH];
+    world_space_translation = (Point3){0,0,0};
+    next_voxel_colour(&ray, &w, WORLD_SIZE);
+    Colour colour = ray.colour;
 
-    int colour = next_voxel_colour(&ray, w, WORLD_SIZE);
-
-    while (colour == -1) {
-        colour = next_voxel_colour(&ray, w, WORLD_SIZE);
-    }
-
-    return colour;
+    return ((colour.r & 0xff) << 16) | ((colour.g & 0xff) << 8) | (colour.b & 0xff);
 }
 
 void render_world(Octree w, Camera c) {
@@ -467,7 +521,7 @@ void fill_voxel(Octree* octree, int size, int x, int y, int z, int colour) {
 
 void fill_to_height(Octree* octree, int x, int z, int height) {
     for (int y = 0; y <= height; y++) {
-        fill_voxel(octree, WORLD_SIZE, x, y, z, 0xff);
+        fill_voxel(octree, WORLD_SIZE, x, y, z, 0xffffff);
     }
 }
 
@@ -487,7 +541,7 @@ Octree fill_world() {
 
     for (int x = 0; x < WORLD_SIZE*2; x++) {
         for (int z = 0; z < WORLD_SIZE*2; z++) {
-            fill_to_height(&world, x, z, (int)(((float)WORLD_SIZE/4)*sin(x*4/(float)WORLD_SIZE) + ((float)WORLD_SIZE/4)*sin(z*4/(float)WORLD_SIZE) + (float)WORLD_SIZE/2));
+            fill_to_height(&world, x, z, (int)(((float)WORLD_SIZE/8)*sin(x*8/(float)WORLD_SIZE) + ((float)WORLD_SIZE/8)*sin(z*8/(float)WORLD_SIZE) + (float)WORLD_SIZE/4));
         }
     }
 
@@ -496,10 +550,10 @@ Octree fill_world() {
 
 void fill_ray_pos_arrays() {
     for (int x = 0; x < GAME_RES_WIDTH; x++) {
-        ray_x_pos_array[x] = (float)(x - GAME_RES_WIDTH/2)/SCREEN_SCALING_FACTOR;
+        ray_x_pos_array[x] = (float)(x - GAME_RES_WIDTH/2.0)/SCREEN_SCALING_FACTOR;
     }
-    for (int y = 0; y < GAME_RES_WIDTH; y++) {
-        ray_y_pos_array[y] = (float)(y - GAME_RES_HEIGHT/2)/SCREEN_SCALING_FACTOR;
+    for (int y = 0; y < GAME_RES_HEIGHT; y++) {
+        ray_y_pos_array[y] = (float)(y - GAME_RES_HEIGHT/2.0)/SCREEN_SCALING_FACTOR;
     }
 }
 
@@ -508,10 +562,17 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
     fill_ray_pos_arrays();
     world = fill_world();
 
-    camera = (Camera){(Point3){-3.5, 1, 3.5}, -1.5708, 0, 0, -1, 1, 0, 2.0944, 0};
-    camera.focal_point = GAME_RES_WIDTH/2/tan(camera.fov/2)/SCREEN_SCALING_FACTOR;
+    camera = (Camera){(Point3){0.0f, 0.0f, 0.0f}, -0.767945, 0, 0, 0, 0, 0, 2.0944, 0}; // -1.5708
+    camera.cos_pitch = cos(camera.pitch);
+    camera.sin_pitch = sin(camera.pitch);
+    camera.cos_yaw = cos(camera.yaw);
+    camera.sin_yaw = sin(camera.yaw);
+    camera.focal_point = GAME_RES_WIDTH/2.0/tan(camera.fov/2.0)/SCREEN_SCALING_FACTOR;
 
     update_start_rays(1, 1, 1);
+    for (int i = 0; i < GAME_RES_WIDTH*GAME_RES_HEIGHT-1; i++) {
+        start_rays[i].collisions = 0;
+    }
 
     buffer.bitmapInfo.bmiHeader.biSize = sizeof(buffer.bitmapInfo.bmiHeader);
     buffer.bitmapInfo.bmiHeader.biWidth = GAME_RES_WIDTH;
@@ -525,7 +586,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
         MessageBox(NULL, "Failed to Allocate Memory", "Error!", MB_ICONEXCLAMATION | MB_OK);
         return 0;
     }
-    
+
     if (!GetMonitorInfoA(MonitorFromWindow(windowHandle, MONITOR_DEFAULTTOPRIMARY), &monitorinfo)) {
         MessageBox(NULL, "Monitor info failed!", "Error!", MB_ICONEXCLAMATION | MB_OK);
         return 0;
@@ -533,6 +594,13 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
 
     monitorWidth = monitorinfo.rcMonitor.right - monitorinfo.rcMonitor.left;
     monitorHeight = monitorinfo.rcMonitor.bottom - monitorinfo.rcMonitor.top;
+
+    windowRect = (RECT){MONITOR_CENTER_H-INITIAL_WINDOW_WIDTH/2, MONITOR_CENTER_V-INITIAL_WINDOW_HEIGHT/2, MONITOR_CENTER_H+INITIAL_WINDOW_WIDTH/2, MONITOR_CENTER_V+INITIAL_WINDOW_HEIGHT/2};
+
+    if (!AdjustWindowRectEx(&windowRect, WS_OVERLAPPEDWINDOW, FALSE, 0)) {
+        MessageBox(NULL, "Adjust window size failed!", "Error!", MB_ICONEXCLAMATION | MB_OK);
+        return 1;
+    }
 
     WNDCLASSEXA WindowClass;
 
@@ -554,7 +622,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
         return 0;
     }
 
-    windowHandle = CreateWindowEx(0, WindowClass.lpszClassName, "Window Title", WS_OVERLAPPEDWINDOW | WS_VISIBLE, MONITOR_CENTER_H - INITIAL_WINDOW_WIDTH/2, MONITOR_CENTER_V - INITIAL_WINDOW_HEIGHT/2, INITIAL_WINDOW_WIDTH, INITIAL_WINDOW_HEIGHT, NULL, NULL, Instance, NULL);
+    windowHandle = CreateWindowEx(0, WindowClass.lpszClassName, "Window Title", WS_OVERLAPPEDWINDOW | WS_VISIBLE, windowRect.left, windowRect.top, windowRect.right - windowRect.left, windowRect.bottom - windowRect.top, NULL, NULL, Instance, NULL);
 
     if (windowHandle == NULL) {
         MessageBox(NULL, "Window Creation Failed!", "Error!", MB_ICONEXCLAMATION | MB_OK);
@@ -577,6 +645,8 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
     int updates = 0;
 
     char window_name[30];
+
+    light_height = WORLD_SIZE;
 
     while (running) {
         while (PeekMessageA(&Msg, NULL, 0, 0, PM_REMOVE)) {
