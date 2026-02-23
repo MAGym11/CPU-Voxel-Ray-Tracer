@@ -1,0 +1,6 @@
+CompileFlags:
+  Add:
+    - --include-directory=C:/MinGW/include
+    - --include-directory=C:/MinGW/x86_64-w64-mingw32/include
+    - --include-directory=C:/MinGW/x86_64-w64-mingw32/include/c++/v1
+    - --include-directory=C:/MinGW/lib/gcc/x86_64-w64-mingw32/10.2.0/include

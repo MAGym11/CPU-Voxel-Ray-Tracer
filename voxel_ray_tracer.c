@@ -1,21 +1,20 @@
 #include <stdio.h>
-#include <sys/types.h>
 #include <windows.h>
 #include <math.h>
 #include <time.h>
 
-#define INITIAL_WINDOW_WIDTH 640
-#define INITIAL_WINDOW_HEIGHT 360
+#define INITIAL_WINDOW_WIDTH 768
+#define INITIAL_WINDOW_HEIGHT 432
 
-#define GAME_RES_WIDTH  640
-#define GAME_RES_HEIGHT 360
+#define GAME_RES_WIDTH  384
+#define GAME_RES_HEIGHT 216
 #define GAME_BPP        32
 #define GAME_BITMAP_MEM_SIZE (GAME_RES_WIDTH * GAME_RES_HEIGHT * (GAME_BPP / 8))
 
 #define MONITOR_CENTER_H (monitorinfo.rcMonitor.left + monitorinfo.rcMonitor.right)/2
 #define MONITOR_CENTER_V (monitorinfo.rcMonitor.top + monitorinfo.rcMonitor.bottom)/2
 
-#define WORLD_SIZE 64
+#define WORLD_SIZE 32
 
 #define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/2.0)
 
@@ -49,15 +48,24 @@ typedef struct {
     float focal_point;
 } Camera;
 
-typedef struct Octree {
-    struct Octree* octants;
-    int colour;
-    unsigned char occupancy;
-} Octree;
-
 typedef struct {
     unsigned char r, g, b;
 } Colour;
+
+typedef struct Voxel {
+    Colour colour;
+    unsigned char occupancy;
+} Voxel;
+
+typedef struct Octree {
+    union {
+        struct Octree* octants;
+        Voxel* grid;
+    };
+    Colour colour;
+    unsigned char occupancy;
+    unsigned char has_grid;
+} Octree;
 
 typedef struct {
     Point3 pos;
@@ -196,7 +204,7 @@ void update() {
     light_height -= 0.2f;
     if (light_height <= -WORLD_SIZE) light_height += WORLD_SIZE*2.0f;
 
-    float v = 0.5f;
+    float v = 1.f;
 
     if (escape_key) SendMessageA(windowHandle, WM_SIZE, 0, 0);
 
@@ -366,8 +374,8 @@ Point3 get_normal(Ray ray) {
 
 extern inline float colour_from_ray(Ray ray) {
     Point3 normal = get_normal(ray);
-    float dot_product = (light_height - ray.pos.x + world_space_translation.x) * normal.x + (2 - ray.pos.y + world_space_translation.y) * normal.y + (light_height - ray.pos.z + world_space_translation.z) * normal.z;
-    dot_product *= inv_modulus((light_height - ray.pos.x + world_space_translation.x), (2 - ray.pos.y + world_space_translation.y), (light_height - ray.pos.z + world_space_translation.z));
+    float dot_product = (light_height - ray.pos.x + world_space_translation.x) * normal.x + (0 - ray.pos.y + world_space_translation.y) * normal.y + (light_height - ray.pos.z + world_space_translation.z) * normal.z;
+    dot_product *= inv_modulus((light_height - ray.pos.x + world_space_translation.x), (0 - ray.pos.y + world_space_translation.y), (light_height - ray.pos.z + world_space_translation.z));
     return dot_product * 0.5 + 0.5;
 }
 
@@ -429,21 +437,23 @@ void next_voxel_colour(Ray* ray, Octree* octree, int size) {
             if (size == 1) {
                 ray->collisions++;
                 if (ray->collisions == 1) {
-                    ray->colour = to_Colour(octree->octants[octant_index].colour);
+                    ray->colour.r += octree->grid[octant_index].colour.r;
+                    ray->colour.g += octree->grid[octant_index].colour.g;
+                    ray->colour.b += octree->grid[octant_index].colour.b;
                     ray->colour = scale_Colour(ray->colour, colour_from_ray(*ray));
                     ray->mx = light_height - ray->pos.x + world_space_translation.x;
-                    ray->my = 2 - ray->pos.y + world_space_translation.y;
+                    ray->my = 0 - ray->pos.y + world_space_translation.y;
                     ray->mz = light_height - ray->pos.z + world_space_translation.z;
                     ray->inv_mx = 1.0f / ray->mx;
                     ray->inv_my = 1.0f / ray->my;
                     ray->inv_mz = 1.0f / ray->mz;
                     next_voxel_colour(ray, octree, size);
+                    return;
                 } else if (ray->collisions == 2) {
                     ray->colour = scale_Colour(ray->colour, 0.5);
                     return;
                 }
             }
-
             Point3 difference = translate_ray(ray, size>>1, octant_index);
             world_space_translation.x -= difference.x;
             world_space_translation.y -= difference.y;
@@ -486,7 +496,7 @@ void render(HDC hdc) {
     StretchDIBits(hdc, 0, 0, windowWidth, windowHeight, 0, 0, GAME_RES_WIDTH, GAME_RES_HEIGHT, buffer.memory, &buffer.bitmapInfo, DIB_RGB_COLORS, SRCCOPY);
 }
 
-void fill_voxel(Octree* octree, int size, int x, int y, int z, int colour) {
+void fill_voxel(Octree* octree, int size, int x, int y, int z, Colour colour) {
     
     char octant_index = 0;
     unsigned char octant = 1;
@@ -505,8 +515,8 @@ void fill_voxel(Octree* octree, int size, int x, int y, int z, int colour) {
     }
 
     if (size == 1) {
-        octree->octants[octant_index].occupancy = 1;
-        octree->octants[octant_index].colour = colour;
+        octree->grid[octant_index].occupancy = 1;
+        octree->grid[octant_index].colour = colour;
         octree->occupancy |= octant;
         return;
     }
@@ -521,15 +531,19 @@ void fill_voxel(Octree* octree, int size, int x, int y, int z, int colour) {
 
 void fill_to_height(Octree* octree, int x, int z, int height) {
     for (int y = 0; y <= height; y++) {
-        fill_voxel(octree, WORLD_SIZE, x, y, z, 0xffffff);
+        fill_voxel(octree, WORLD_SIZE, x, y, z, to_Colour(0xffffff));
     }
 }
 
 Octree empty_octree(int size) {
-    Octree octree = {malloc(8*sizeof(Octree)), 0, 0};
+    Octree octree = {0, 0, 0};
+    if (size == 1)
+        octree.grid = malloc(8*sizeof(Voxel));
+    else
+        octree.octants = malloc(8*sizeof(Octree));
     for (int i = 0; i < 8; i++) {
         if (size == 1)
-            octree.octants[i] = (Octree){0, 0, 0};
+            octree.grid[i] = (Voxel){0, 0};
         else
             octree.octants[i] = empty_octree(size >> 1);
     }
