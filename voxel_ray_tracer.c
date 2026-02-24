@@ -469,7 +469,7 @@ void next_voxel_colour(Ray* ray, unsigned int octant_index, int size) {
     }
 }
 
-int render_pixel(int screen_x, int screen_y, Octree w, Camera c) {
+int render_pixel(int screen_x, int screen_y, Camera c) {
 
     Ray ray = start_rays[screen_x + screen_y*GAME_RES_WIDTH];
     world_space_translation = (Point3){0,0,0};
@@ -482,7 +482,7 @@ int render_pixel(int screen_x, int screen_y, Octree w, Camera c) {
 void render_world(Camera c) {
     for (int y = 0; y < GAME_RES_HEIGHT; y++) {
         for (int x = 0; x < GAME_RES_WIDTH; x++) {
-            pixel(x, y, render_pixel(x, y, w, c));
+            pixel(x, y, render_pixel(x, y, c));
         }
     }
 }
