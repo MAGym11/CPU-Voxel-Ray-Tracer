@@ -3,11 +3,11 @@
 #include <math.h>
 #include <time.h>
 
-#define INITIAL_WINDOW_WIDTH 640
-#define INITIAL_WINDOW_HEIGHT 360
+#define INITIAL_WINDOW_WIDTH 768
+#define INITIAL_WINDOW_HEIGHT 432
 
-#define GAME_RES_WIDTH  320
-#define GAME_RES_HEIGHT 180
+#define GAME_RES_WIDTH  384
+#define GAME_RES_HEIGHT 216
 #define GAME_BPP        32
 #define GAME_BITMAP_MEM_SIZE (GAME_RES_WIDTH * GAME_RES_HEIGHT * (GAME_BPP / 8))
 
@@ -391,21 +391,25 @@ extern inline Colour to_Colour(int colour) {
     return (Colour){(colour & 0xff0000)>>16, (colour & 0xff00)>>8, colour & 0xff};
 }
 
-extern inline unsigned char find_octant(Ray* ray) {
-    float x = (ray->pos.x == 0.0) ? ray->mx : ray->pos.x;
-    float y = (ray->pos.y == 0.0) ? ray->my : ray->pos.y;
-    float z = (ray->pos.z == 0.0) ? ray->mz : ray->pos.z;
+extern inline unsigned char find_octant(Ray* ray, int size) {
+
+    float translated_ray_pos_x = ray->pos.x - world_space_translation.x + WORLD_SIZE;
+    float translated_ray_pos_y = ray->pos.y - world_space_translation.y + WORLD_SIZE;
+    float translated_ray_pos_z = ray->pos.z - world_space_translation.z + WORLD_SIZE;
+
+    int x_pos = translated_ray_pos_x;
+    int y_pos = translated_ray_pos_y;
+    int z_pos = translated_ray_pos_z;
+
+    if (x_pos == translated_ray_pos_x && ray->mx < 0) x_pos--;
+    if (y_pos == translated_ray_pos_y && ray->my < 0) y_pos--;
+    if (z_pos == translated_ray_pos_z && ray->mz < 0) z_pos--;
 
     unsigned char octant = 0;
-    if (x < 0.0) {
-        octant += 1;
-    }
-    if (y < 0.0) {
-        octant += 2;
-    }
-    if (z < 0.0) {
-        octant += 4;
-    }
+    if (!(x_pos & size)) octant += 1;
+    if (!(y_pos & size)) octant += 2;
+    if (!(z_pos & size)) octant += 4;
+
     return octant;
 }
 
@@ -427,7 +431,7 @@ void next_voxel_colour(Ray* ray, unsigned int octant_index, int size) {
             return;
         }
         if (out_of_bounds(ray, size)) return;
-        unsigned char octant = find_octant(ray);
+        unsigned char octant = find_octant(ray, size);
 
         if (octant_array[octant_index].occupancy & (1 << octant)) {
             if (size == 1) {
