@@ -1,7 +1,9 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <windows.h>
 #include <math.h>
 #include <time.h>
+#include <wingdi.h>
 
 #define INITIAL_WINDOW_WIDTH 768
 #define INITIAL_WINDOW_HEIGHT 432
@@ -173,6 +175,9 @@ void update_start_rays(char camera_moved_xz, char camera_moved_y, char camera_ro
 
                 start_rays[x + y*GAME_RES_WIDTH] = rotate_pitch(start_rays[x + y*GAME_RES_WIDTH], camera);
                 start_rays[x + y*GAME_RES_WIDTH] = rotate_yaw(start_rays[x + y*GAME_RES_WIDTH], camera);
+
+                start_rays[x + y*GAME_RES_WIDTH].collisions = 0;
+                start_rays[x + y*GAME_RES_WIDTH].colour = (Colour){0,0,0};
             }
             if (camera_moved_xz || camera_rotated) {
                 start_rays[x + y*GAME_RES_WIDTH].pos.x = start_rays[x + y*GAME_RES_WIDTH].mx + camera.pos.x;
@@ -280,10 +285,64 @@ void update() {
 }
 
 extern inline float sign(float num) {
-    return (num >= 0.0f) ? 1.0f : -1.0f;
+    return (signbit(num)) ? -1.0f : 1.0f;
 }
 
 void next_edge(Ray* ray, int size, unsigned char octant) {
+
+    /*
+    float translated_ray_pos_x = ray->pos.x - world_space_translation.x + WORLD_SIZE;
+    float translated_ray_pos_y = ray->pos.y - world_space_translation.y + WORLD_SIZE;
+    float translated_ray_pos_z = ray->pos.z - world_space_translation.z + WORLD_SIZE;
+
+    int int_ray_x = translated_ray_pos_x;
+    int int_ray_y = translated_ray_pos_y;
+    int int_ray_z = translated_ray_pos_z;
+
+    float dx = translated_ray_pos_x - (int_ray_x & (-size));
+    float dy = translated_ray_pos_y - (int_ray_y & (-size));
+    float dz = translated_ray_pos_z - (int_ray_z & (-size));
+
+    if (!signbit(ray->mx)) dx -= size;
+    else if (translated_ray_pos_x == int_ray_x) dx += size;
+    if (!signbit(ray->my)) dy -= size;
+    else if (translated_ray_pos_y == int_ray_y) dy += size;
+    if (!signbit(ray->mz)) dz -= size;
+    else if (translated_ray_pos_z == int_ray_z) dz += size;
+
+    float t_x = fabsf(dx * ray->inv_mx);
+    float t_y = fabsf(dy * ray->inv_my);
+    float t_z = fabsf(dz * ray->inv_mz);
+
+    float min_t = t_x;
+    char min_coord = 0;
+
+    if (t_y < t_x) {
+        min_t = t_y;
+        min_coord = 1;
+    }
+    if (t_z < t_y) {
+        min_t = t_z;
+        min_coord = 2;
+    }
+
+    switch (min_coord) {
+        case 0:
+            ray->pos.x -= dx;
+            ray->pos.y += ray->my * min_t;
+            ray->pos.z += ray->mz * min_t;
+            break;
+        case 1:
+            ray->pos.x += ray->mx * min_t;
+            ray->pos.y -= dy;
+            ray->pos.z += ray->mz * min_t;
+            break;
+        default:
+            ray->pos.x += ray->mx * min_t;
+            ray->pos.y += ray->my * min_t;
+            ray->pos.z -= dz;
+    }
+    */
 
     float x_diff;
     float y_diff;
@@ -291,37 +350,37 @@ void next_edge(Ray* ray, int size, unsigned char octant) {
 
     if (ray->mx != 0.0f) {
         int next_edge_x = ((((octant & 1) == 0) ? 1 : -1) + (int)sign(ray->mx));
-        if (next_edge_x > 1) next_edge_x = 1;
-        else if (next_edge_x < -1) next_edge_x = -1;
-        x_diff = fabs((next_edge_x*(float)size - ray->pos.x));
+        next_edge_x /= 2;
+        x_diff = fabsf((next_edge_x*(float)size - ray->pos.x));
     } else {
         x_diff = INFINITY;
     }
 
     if (ray->my != 0.0f) {
         int next_edge_y = ((((octant & 2) == 0) ? 1 : -1) + (int)sign(ray->my));
-        if (next_edge_y > 1) next_edge_y = 1;
-        else if (next_edge_y < -1) next_edge_y = -1;
-        y_diff = fabs((next_edge_y*(float)size - ray->pos.y));
+        next_edge_y /= 2;
+        y_diff = fabsf((next_edge_y*(float)size - ray->pos.y));
     } else {
         y_diff = INFINITY;
     }
 
     if (ray->mz != 0.0f) {
         int next_edge_z = ((((octant & 4) == 0) ? 1 : -1) + (int)sign(ray->mz));
-        if (next_edge_z > 1) next_edge_z = 1;
-        else if (next_edge_z < -1) next_edge_z = -1;
-        z_diff = fabs((next_edge_z*(float)size - ray->pos.z));
+        next_edge_z /= 2;
+        z_diff = fabsf((next_edge_z*(float)size - ray->pos.z));
     } else {
         z_diff = INFINITY;
     }
 
-    float x_t_value = fabs(x_diff * ray->inv_mx);
-    float y_t_value = fabs(y_diff * ray->inv_my);
-    float z_t_value = fabs(z_diff * ray->inv_mz);
+    float x_t_value = fabsf(x_diff * ray->inv_mx);
+    float y_t_value = fabsf(y_diff * ray->inv_my);
+    float z_t_value = fabsf(z_diff * ray->inv_mz);
 
     float minimum_t_value = (x_t_value < y_t_value) ? x_t_value : y_t_value;
     minimum_t_value = (minimum_t_value < z_t_value) ? minimum_t_value : z_t_value;
+
+    // printf("%f %f | %f %f | %f %f | %f %f\n", x_diff, dx, y_diff, dy, z_diff, dz, minimum_t_value, min_t);
+    //if (x_diff != fabsf(dx) && ray->mx != 0.0) printf("%f %f %f %f %f\n", x_diff, dx, ray->pos.x, translated_ray_pos_x, ray->mx);
 
     if (minimum_t_value == x_t_value) {
         ray->pos.x += x_diff * sign(ray->mx);
@@ -391,7 +450,7 @@ extern inline Colour to_Colour(int colour) {
     return (Colour){(colour & 0xff0000)>>16, (colour & 0xff00)>>8, colour & 0xff};
 }
 
-extern inline unsigned char find_octant(Ray* ray, int size) {
+extern inline unsigned char find_octant(Ray* ray, unsigned int size) {
 
     float translated_ray_pos_x = ray->pos.x - world_space_translation.x + WORLD_SIZE;
     float translated_ray_pos_y = ray->pos.y - world_space_translation.y + WORLD_SIZE;
@@ -422,7 +481,14 @@ extern inline int out_of_bounds(Ray* ray, int size) {
         || (ray->pos.z == size && ray->mz > 0) || (ray->pos.z == -size && ray->mz < 0);
 }
 
-void next_voxel_colour(Ray* ray, unsigned int octant_index, int size) {
+void next_voxel_colour(Ray* ray, unsigned int octant_index, unsigned int size) {
+    ray->pos.x = ray->pos.x - world_space_translation.x + WORLD_SIZE; // Temporary to prevent floating point precision error
+    ray->pos.y = ray->pos.y - world_space_translation.y + WORLD_SIZE;
+    ray->pos.z = ray->pos.z - world_space_translation.z + WORLD_SIZE;
+
+    ray->pos.x += world_space_translation.x - WORLD_SIZE;
+    ray->pos.y += world_space_translation.y - WORLD_SIZE;
+    ray->pos.z += world_space_translation.z - WORLD_SIZE;
     while (1) {
         if (out_of_bounds(ray, WORLD_SIZE)) {
             ray->collisions++;
@@ -496,7 +562,7 @@ void render(HDC hdc) {
     StretchDIBits(hdc, 0, 0, windowWidth, windowHeight, 0, 0, GAME_RES_WIDTH, GAME_RES_HEIGHT, buffer.memory, &buffer.bitmapInfo, DIB_RGB_COLORS, SRCCOPY);
 }
 
-void fill_voxel(Octree* octree, int size, int x, int y, int z, Colour colour) {
+void fill_voxel(Octree* octree, unsigned int size, int x, int y, int z, Colour colour) {
     
     char octant_index = 0;
     unsigned char octant = 1;
@@ -535,7 +601,7 @@ void fill_to_height(Octree* octree, int x, int z, int height) {
     }
 }
 
-void create_empty_octree(int size, unsigned int curr_octant_array_index, unsigned int* next_octant_array_index, unsigned int* next_voxel_array_index) {
+void create_empty_octree(unsigned int size, unsigned int curr_octant_array_index, unsigned int* next_octant_array_index, unsigned int* next_voxel_array_index) {
     if (size == WORLD_SIZE) {
         octant_array = malloc((8*size*size*size - 1)/7 * sizeof(Octree));
         voxel_array = malloc(8*size*size*size*sizeof(Voxel));
@@ -587,7 +653,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
     fill_ray_pos_arrays();
     create_world();
 
-    camera = (Camera){(Point3){0.0f, 0.0f, 0.0f}, -0.767945, 0, 0, 0, 0, 0, 2.0944, 0}; // -1.5708
+    camera = (Camera){(Point3){0.0f, 0.0f, 0.0f}, 0, 0, 0, 0, 0, 0, 2.0944, 0};
     camera.cos_pitch = cos(camera.pitch);
     camera.sin_pitch = sin(camera.pitch);
     camera.cos_yaw = cos(camera.yaw);
@@ -595,9 +661,6 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
     camera.focal_point = GAME_RES_WIDTH/2.0/tan(camera.fov/2.0)/SCREEN_SCALING_FACTOR;
 
     update_start_rays(1, 1, 1);
-    for (int i = 0; i < GAME_RES_WIDTH*GAME_RES_HEIGHT-1; i++) {
-        start_rays[i].collisions = 0;
-    }
 
     buffer.bitmapInfo.bmiHeader.biSize = sizeof(buffer.bitmapInfo.bmiHeader);
     buffer.bitmapInfo.bmiHeader.biWidth = GAME_RES_WIDTH;
