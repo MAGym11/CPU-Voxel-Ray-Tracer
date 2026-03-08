@@ -16,7 +16,7 @@
 #define MONITOR_CENTER_H (monitorinfo.rcMonitor.left + monitorinfo.rcMonitor.right)/2
 #define MONITOR_CENTER_V (monitorinfo.rcMonitor.top + monitorinfo.rcMonitor.bottom)/2
 
-#define WORLD_SCALE 32
+#define WORLD_SCALE 128
 
 #define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/2.0)
 
@@ -208,10 +208,10 @@ void update() {
     char camera_rotated = 0;
 
 
-    light_height -= 0.2f;
-    if (light_height <= -WORLD_SCALE) light_height += WORLD_SCALE*2.0f;
+    light_height -= 0.8f;
+    if (light_height <= 0) light_height += WORLD_SCALE*2.0f;
 
-    float v = 1.f;
+    float v = 4.f;
 
     if (escape_key) SendMessageA(windowHandle, WM_SIZE, 0, 0);
 
@@ -273,42 +273,34 @@ void update() {
         camera_moved_y = 1;
     }
 
-    if (camera.pos.x > (float)WORLD_SCALE) camera.pos.x = (float)WORLD_SCALE;
-    if (camera.pos.x < -(float)WORLD_SCALE) camera.pos.x = -(float)WORLD_SCALE;
-    if (camera.pos.y > (float)WORLD_SCALE) camera.pos.y = (float)WORLD_SCALE;
-    if (camera.pos.y < -(float)WORLD_SCALE) camera.pos.y = -(float)WORLD_SCALE;
-    if (camera.pos.z > (float)WORLD_SCALE) camera.pos.z = (float)WORLD_SCALE;
-    if (camera.pos.z < -(float)WORLD_SCALE) camera.pos.z = -(float)WORLD_SCALE;
+    if (camera.pos.x > WORLD_SCALE << 1) camera.pos.x = WORLD_SCALE << 1;
+    if (camera.pos.x < 0) camera.pos.x = 0;
+    if (camera.pos.y > WORLD_SCALE << 1) camera.pos.y = WORLD_SCALE << 1;
+    if (camera.pos.y < 0) camera.pos.y = 0;
+    if (camera.pos.z > WORLD_SCALE << 1) camera.pos.z = WORLD_SCALE << 1;
+    if (camera.pos.z < 0) camera.pos.z = 0;
 
     if (camera_moved_xz
             || camera_moved_y
             || camera_rotated) update_start_rays(camera_moved_xz, camera_moved_y, camera_rotated);
 }
 
-extern inline float sign(float num) {
-    return (signbit(num)) ? -1.0f : 1.0f;
-}
+void next_edge(Ray* ray, int scale) {
 
-void next_edge(Ray* ray, int scale, unsigned char octant) {
+    float octree_space_ray_x = (int)ray->pos.x & (-scale);
+    float octree_space_ray_y = (int)ray->pos.y & (-scale);
+    float octree_space_ray_z = (int)ray->pos.z & (-scale);
 
-    float translated_ray_pos_x = ray->pos.x - world_space_translation.x + WORLD_SCALE;
-    float translated_ray_pos_y = ray->pos.y - world_space_translation.y + WORLD_SCALE;
-    float translated_ray_pos_z = ray->pos.z - world_space_translation.z + WORLD_SCALE;
-
-    float octree_space_ray_x = (int)translated_ray_pos_x & (-scale);
-    float octree_space_ray_y = (int)translated_ray_pos_y & (-scale);
-    float octree_space_ray_z = (int)translated_ray_pos_z & (-scale);
-
-    float dx = translated_ray_pos_x - octree_space_ray_x;
-    float dy = translated_ray_pos_y - octree_space_ray_y;
-    float dz = translated_ray_pos_z - octree_space_ray_z;
+    float dx = ray->pos.x - octree_space_ray_x;
+    float dy = ray->pos.y - octree_space_ray_y;
+    float dz = ray->pos.z - octree_space_ray_z;
 
     if (!signbit(ray->dir_x)) dx -= scale;
-    else if (translated_ray_pos_x == octree_space_ray_x) dx += scale;
+    else if (ray->pos.x == octree_space_ray_x) dx += scale;
     if (!signbit(ray->dir_y)) dy -= scale;
-    else if (translated_ray_pos_y == octree_space_ray_y) dy += scale;
+    else if (ray->pos.y == octree_space_ray_y) dy += scale;
     if (!signbit(ray->dir_z)) dz -= scale;
-    else if (translated_ray_pos_z == octree_space_ray_z) dz += scale;
+    else if (ray->pos.z == octree_space_ray_z) dz += scale;
 
     float t_x = fabsf(dx * ray->inv_dir_x);
     float t_y = fabsf(dy * ray->inv_dir_y);
@@ -384,8 +376,12 @@ Point3 get_normal(Ray ray) {
 
 extern inline float colour_from_ray(Ray ray) {
     Point3 normal = get_normal(ray);
-    float dot_product = (light_height - ray.pos.x + world_space_translation.x) * normal.x + (0 - ray.pos.y + world_space_translation.y) * normal.y + (light_height - ray.pos.z + world_space_translation.z) * normal.z;
-    dot_product *= inv_modulus((light_height - ray.pos.x + world_space_translation.x), (0 - ray.pos.y + world_space_translation.y), (light_height - ray.pos.z + world_space_translation.z));
+    float dot_product = (light_height - ray.pos.x) * normal.x
+                        + (WORLD_SCALE - ray.pos.y) * normal.y
+                        + (light_height - ray.pos.z) * normal.z;
+    dot_product *= inv_modulus((light_height - ray.pos.x),
+                                (WORLD_SCALE - ray.pos.y),
+                                (light_height - ray.pos.z));
     return dot_product * 0.5 + 0.5;
 }
 
@@ -402,17 +398,13 @@ extern inline Colour to_Colour(int colour) {
 
 extern inline unsigned char find_octant(Ray* ray, unsigned int scale) {
 
-    float translated_ray_pos_x = ray->pos.x - world_space_translation.x + WORLD_SCALE;
-    float translated_ray_pos_y = ray->pos.y - world_space_translation.y + WORLD_SCALE;
-    float translated_ray_pos_z = ray->pos.z - world_space_translation.z + WORLD_SCALE;
+    int x_pos = ray->pos.x;
+    int y_pos = ray->pos.y;
+    int z_pos = ray->pos.z;
 
-    int x_pos = translated_ray_pos_x;
-    int y_pos = translated_ray_pos_y;
-    int z_pos = translated_ray_pos_z;
-
-    if (x_pos == translated_ray_pos_x && ray->dir_x < 0) x_pos--;
-    if (y_pos == translated_ray_pos_y && ray->dir_y < 0) y_pos--;
-    if (z_pos == translated_ray_pos_z && ray->dir_z < 0) z_pos--;
+    if (x_pos == ray->pos.x && ray->dir_x < 0) x_pos--;
+    if (y_pos == ray->pos.y && ray->dir_y < 0) y_pos--;
+    if (z_pos == ray->pos.z && ray->dir_z < 0) z_pos--;
 
     unsigned char octant = 0;
     if (!(x_pos & scale)) octant += 1;
@@ -422,31 +414,36 @@ extern inline unsigned char find_octant(Ray* ray, unsigned int scale) {
     return octant;
 }
 
+extern inline int out_of_world(Ray* ray) {
+    return (ray->pos.x > (WORLD_SCALE << 1)) || (ray->pos.x < 0)
+        || (ray->pos.x == (WORLD_SCALE << 1) && ray->dir_x > 0) || (ray->pos.x == 0 && ray->dir_x < 0)
+        || (ray->pos.y > (WORLD_SCALE << 1)) || (ray->pos.y < 0)
+        || (ray->pos.y == (WORLD_SCALE << 1) && ray->dir_y > 0) || (ray->pos.y == 0 && ray->dir_y < 0)
+        || (ray->pos.z > (WORLD_SCALE << 1)) || (ray->pos.z < 0)
+        || (ray->pos.z == (WORLD_SCALE << 1) && ray->dir_z > 0) || (ray->pos.z == 0 && ray->dir_z < 0);
+}
+
 extern inline int out_of_bounds(Ray* ray, int scale) {
-    return (ray->pos.x > scale) || (ray->pos.x < -scale)
-        || (ray->pos.x == scale && ray->dir_x > 0) || (ray->pos.x == -scale && ray->dir_x < 0)
-        || (ray->pos.y > scale) || (ray->pos.y < -scale)
-        || (ray->pos.y == scale && ray->dir_y > 0) || (ray->pos.y == -scale && ray->dir_y < 0)
-        || (ray->pos.z > scale) || (ray->pos.z < -scale)
-        || (ray->pos.z == scale && ray->dir_z > 0) || (ray->pos.z == -scale && ray->dir_z < 0);
+    int pos_x = (int)ray->pos.x;
+    int pos_y = (int)ray->pos.y;
+    int pos_z = (int)ray->pos.z;
+    
+    if (ray->pos.x == (pos_x & (-(scale<<1)))) return 1;
+    if (ray->pos.y == (pos_y & (-(scale<<1)))) return 1;
+    if (ray->pos.z == (pos_z & (-(scale<<1)))) return 1;
+
+    return 0;
 }
 
 void next_voxel_colour(Ray* ray, unsigned int octant_index, unsigned int scale) {
-    ray->pos.x = ray->pos.x - world_space_translation.x + WORLD_SCALE; // Temporary to prevent floating point precision error
-    ray->pos.y = ray->pos.y - world_space_translation.y + WORLD_SCALE;
-    ray->pos.z = ray->pos.z - world_space_translation.z + WORLD_SCALE;
+    if (out_of_world(ray)) {
+        ray->collisions++;
+        if (ray->collisions == 1)
+            ray->colour = to_Colour(SKY);
+        return;
+    }
 
-    ray->pos.x += world_space_translation.x - WORLD_SCALE;
-    ray->pos.y += world_space_translation.y - WORLD_SCALE;
-    ray->pos.z += world_space_translation.z - WORLD_SCALE;
     while (1) {
-        if (out_of_bounds(ray, WORLD_SCALE)) {
-            ray->collisions++;
-            if (ray->collisions == 1)
-                ray->colour = to_Colour(SKY);
-            return;
-        }
-        if (out_of_bounds(ray, scale)) return;
         unsigned char octant = find_octant(ray, scale);
 
         if (octant_array[octant_index].occupancy & (1 << octant)) {
@@ -457,35 +454,31 @@ void next_voxel_colour(Ray* ray, unsigned int octant_index, unsigned int scale) 
                     ray->colour.g += voxel_array[octant_array[octant_index].voxel_array_index + octant].colour.g;
                     ray->colour.b += voxel_array[octant_array[octant_index].voxel_array_index + octant].colour.b;
                     ray->colour = scale_Colour(ray->colour, colour_from_ray(*ray));
-                    ray->dir_x = light_height - ray->pos.x + world_space_translation.x;
-                    ray->dir_y = 0 - ray->pos.y + world_space_translation.y;
-                    ray->dir_z = light_height - ray->pos.z + world_space_translation.z;
+                    ray->dir_x = light_height - ray->pos.x;
+                    ray->dir_y = WORLD_SCALE - ray->pos.y;
+                    ray->dir_z = light_height - ray->pos.z;
                     ray->inv_dir_x = 1.0f / ray->dir_x;
                     ray->inv_dir_y = 1.0f / ray->dir_y;
                     ray->inv_dir_z = 1.0f / ray->dir_z;
-                    next_voxel_colour(ray, octant_index, scale);
-                    return;
+                    goto check_out_of_bounds;
                 } else if (ray->collisions == 2) {
                     ray->colour = scale_Colour(ray->colour, 0.5);
                     return;
                 }
             }
-            Point3 difference = translate_ray(ray, scale>>1, octant);
-            world_space_translation.x -= difference.x;
-            world_space_translation.y -= difference.y;
-            world_space_translation.z -= difference.z;
             next_voxel_colour(ray, octant_array[octant_index].octant_array_index + octant, scale>>1);
-            ray->pos.x += difference.x;
-            ray->pos.y += difference.y;
-            ray->pos.z += difference.z;
-            world_space_translation.x += difference.x;
-            world_space_translation.y += difference.y;
-            world_space_translation.z += difference.z;
-            if (ray->collisions < 2) continue;
+            if (ray->collisions < 2) goto check_out_of_bounds;
             return;
         }
-
-        next_edge(ray, scale, octant);
+        next_edge(ray, scale);
+check_out_of_bounds:
+        if (out_of_world(ray)) {
+            ray->collisions++;
+            if (ray->collisions == 1)
+                ray->colour = to_Colour(SKY);
+            return;
+        }
+        if (out_of_bounds(ray, scale)) return;
     }
 }
 
@@ -603,7 +596,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
     fill_ray_pos_arrays();
     create_world();
 
-    camera = (Camera){(Point3){0.0f, 0.0f, 0.0f}, 0, 0, 0, 0, 0, 0, 2.0944, 0};
+    camera = (Camera){(Point3){WORLD_SCALE, WORLD_SCALE, WORLD_SCALE}, 0, 0, 0, 0, 0, 0, 2.0944, 0};
     camera.cos_pitch = cos(camera.pitch);
     camera.sin_pitch = sin(camera.pitch);
     camera.cos_yaw = cos(camera.yaw);
@@ -684,7 +677,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
 
     char window_name[30];
 
-    light_height = WORLD_SCALE;
+    light_height = WORLD_SCALE<<1;
 
     while (running) {
         while (PeekMessageA(&Msg, NULL, 0, 0, PM_REMOVE)) {
