@@ -17,9 +17,9 @@
 #define MONITOR_CENTER_H (monitorinfo.rcMonitor.left + monitorinfo.rcMonitor.right)/2
 #define MONITOR_CENTER_V (monitorinfo.rcMonitor.top + monitorinfo.rcMonitor.bottom)/2
 
-#define WORLD_SCALE 128
+#define WORLD_SCALE 256
 
-#define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/2.0)
+#define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/16.0)
 
 #define pixel(x, y, colour) *((uint16_t*)buffer.memory + x + y*GAME_RES_WIDTH) = colour
 
@@ -372,7 +372,7 @@ extern inline uint16_t scale_colour(uint16_t c, float scaler) {
     uint8_t r = (c & 0x1f) * scaler;
     uint8_t g = ((c>>5) & 0x1f) * scaler;
     uint8_t b = ((c>>10) & 0x1f) * scaler;
-    return r | (g<<5) | (b<<10);
+    return b | (g<<5) | (r<<10);
 }
 
 extern inline uint8_t find_octant(Ray* ray, uint32_t scale) {
@@ -431,6 +431,7 @@ void traverse_node(Ray* ray, uint32_t octant_index, uint32_t scale) {
                 if (ray->collisions == 1) {
                     ray->colour += voxel_array[octant_array[octant_index].voxel_array_index + octant].colour;
                     ray->colour = scale_colour(ray->colour, colour_from_ray(*ray));
+                    return;
                     ray->dir_x = light_height - ray->pos.x;
                     ray->dir_y = WORLD_SCALE - ray->pos.y;
                     ray->dir_z = light_height - ray->pos.z;
@@ -444,7 +445,7 @@ void traverse_node(Ray* ray, uint32_t octant_index, uint32_t scale) {
                 }
             }
             traverse_node(ray, octant_array[octant_index].octant_array_index + octant, scale>>1);
-            if (ray->collisions < 2) goto check_out_of_bounds;
+            if (ray->collisions < 1) goto check_out_of_bounds;
             return;
         }
         advance_ray(ray, scale);
@@ -492,7 +493,7 @@ int16_t get_voxel_colour(uint32_t x, uint32_t y, uint32_t z) {
     return -1;
 }
 
-uint8_t create_octree(uint32_t scale, uint32_t octant_index, uint32_t* next_octant_index, uint32_t* next_voxel_index, uint32_t pos_x, uint32_t pos_y, uint32_t pos_z) {
+uint8_t create_octree(uint32_t scale, size_t octant_index, size_t* next_octant_index, size_t* next_voxel_index, uint32_t pos_x, uint32_t pos_y, uint32_t pos_z) {
     if (scale == 1) {
         octant_array[octant_index].voxel_array_index = *next_voxel_index;
         *next_voxel_index += 8;
@@ -537,11 +538,18 @@ void create_world() {
         height_map[i] = -1;
     }
 
-    uint32_t octant_array_index = 1;
-    uint32_t voxel_array_index = 0;
+    size_t octant_array_index = 1;
+    size_t voxel_array_index = 0;
     octant_array = malloc(((size_t)8*WORLD_SCALE*WORLD_SCALE*WORLD_SCALE - 1)/7 * sizeof(Octree));
+    if (!octant_array) {
+        printf("octant_array required too  much memory\n");
+        exit(0);
+    }
     voxel_array = malloc((size_t)8*WORLD_SCALE*WORLD_SCALE*WORLD_SCALE*sizeof(Voxel));
-    if (octant_array == NULL || voxel_array == NULL) exit(0);
+    if (!voxel_array) {
+        printf("voxel_array required too  much memory\n");
+        exit(0);
+    }
     create_octree(WORLD_SCALE, 0, &octant_array_index, &voxel_array_index, 0, 0, 0);
 }
 
