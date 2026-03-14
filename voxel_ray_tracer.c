@@ -11,19 +11,19 @@
 
 #define GAME_RES_WIDTH  384
 #define GAME_RES_HEIGHT 216
-#define GAME_BPP        32
+#define GAME_BPP        16
 #define GAME_BITMAP_MEM_SIZE (GAME_RES_WIDTH * GAME_RES_HEIGHT * (GAME_BPP / 8))
 
 #define MONITOR_CENTER_H (monitorinfo.rcMonitor.left + monitorinfo.rcMonitor.right)/2
 #define MONITOR_CENTER_V (monitorinfo.rcMonitor.top + monitorinfo.rcMonitor.bottom)/2
 
-#define WORLD_SCALE 256
+#define WORLD_SCALE 128
 
 #define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/2.0)
 
-#define pixel(x, y, colour) *((int*)buffer.memory + x + y*GAME_RES_WIDTH) = colour
+#define pixel(x, y, colour) *((uint16_t*)buffer.memory + x + y*GAME_RES_WIDTH) = colour
 
-#define SKY 0x87CEEB
+#define SKY 0x475d
 
 int windowWidth = INITIAL_WINDOW_WIDTH, windowHeight = INITIAL_WINDOW_HEIGHT;
 int monitorWidth, monitorHeight;
@@ -51,19 +51,15 @@ typedef struct {
     float focal_point;
 } Camera;
 
-typedef struct {
-    uint8_t r, g, b;
-} Colour;
-
 typedef struct Voxel {
-    Colour colour;
-    uint8_t occupancy;
+    unsigned short colour: 15;
+    unsigned short occupancy: 1;
 } Voxel;
 
 typedef struct Octree {
     union {
-        uint32_t octant_array_index;
-        uint32_t voxel_array_index;
+        uint64_t octant_array_index;
+        uint64_t voxel_array_index;
     };
     uint8_t occupancy;
 } Octree;
@@ -72,7 +68,7 @@ typedef struct {
     Point3 pos;
     float dir_x, dir_y, dir_z, inv_dir_x, inv_dir_y, inv_dir_z;
     int collisions;
-    Colour colour;
+    uint16_t colour;
 } Ray;
 
 Camera camera;
@@ -80,6 +76,7 @@ Camera camera;
 Octree* octant_array;
 Voxel* voxel_array;
 
+HDC hdc;
 int running;
 Bitmap buffer;
 int initial_window_width;
@@ -94,11 +91,11 @@ float ray_y_pos_array[GAME_RES_HEIGHT];
 
 Ray start_rays[GAME_RES_WIDTH*GAME_RES_HEIGHT];
 
-Point3 world_space_translation;
+int16_t height_map[4*WORLD_SCALE*WORLD_SCALE];
 
 float light_height;
 
-void render();
+void render(HDC hdc);
 
 LRESULT CALLBACK WndProc(HWND WindowHandle, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch(msg) {
@@ -122,7 +119,7 @@ LRESULT CALLBACK WndProc(HWND WindowHandle, UINT msg, WPARAM wParam, LPARAM lPar
                     }
             }
             lastSizeMsg = wParam;
-            render();
+            render(hdc);
         break;
         default:
             return DefWindowProc(WindowHandle, msg, wParam, lParam);
@@ -177,7 +174,7 @@ void update_start_rays(char camera_moved_xz, char camera_moved_y, char camera_ro
                 start_rays[x + y*GAME_RES_WIDTH] = rotate_yaw(start_rays[x + y*GAME_RES_WIDTH], camera);
 
                 start_rays[x + y*GAME_RES_WIDTH].collisions = 0;
-                start_rays[x + y*GAME_RES_WIDTH].colour = (Colour){0,0,0};
+                start_rays[x + y*GAME_RES_WIDTH].colour = 0;
             }
             if (camera_moved_xz || camera_rotated) {
                 start_rays[x + y*GAME_RES_WIDTH].pos.x = start_rays[x + y*GAME_RES_WIDTH].dir_x + camera.pos.x;
@@ -371,15 +368,11 @@ extern inline float colour_from_ray(Ray ray) {
     return dot_product * 0.5 + 0.5;
 }
 
-extern inline Colour scale_Colour(Colour c, float scaler) {
-    c.r = c.r * scaler;
-    c.g = c.g * scaler;
-    c.b = c.b * scaler;
-    return c;
-}
-
-extern inline Colour to_Colour(int colour) {
-    return (Colour){(colour & 0xff0000)>>16, (colour & 0xff00)>>8, colour & 0xff};
+extern inline uint16_t scale_colour(uint16_t c, float scaler) {
+    uint8_t r = (c & 0x1f) * scaler;
+    uint8_t g = ((c>>5) & 0x1f) * scaler;
+    uint8_t b = ((c>>10) & 0x1f) * scaler;
+    return r | (g<<5) | (b<<10);
 }
 
 extern inline uint8_t find_octant(Ray* ray, uint32_t scale) {
@@ -425,7 +418,7 @@ void traverse_node(Ray* ray, uint32_t octant_index, uint32_t scale) {
     if (out_of_world(ray)) {
         ray->collisions++;
         if (ray->collisions == 1)
-            ray->colour = to_Colour(SKY);
+            ray->colour = SKY;
         return;
     }
 
@@ -436,10 +429,8 @@ void traverse_node(Ray* ray, uint32_t octant_index, uint32_t scale) {
             if (scale == 1) {
                 ray->collisions++;
                 if (ray->collisions == 1) {
-                    ray->colour.r += voxel_array[octant_array[octant_index].voxel_array_index + octant].colour.r;
-                    ray->colour.g += voxel_array[octant_array[octant_index].voxel_array_index + octant].colour.g;
-                    ray->colour.b += voxel_array[octant_array[octant_index].voxel_array_index + octant].colour.b;
-                    ray->colour = scale_Colour(ray->colour, colour_from_ray(*ray));
+                    ray->colour += voxel_array[octant_array[octant_index].voxel_array_index + octant].colour;
+                    ray->colour = scale_colour(ray->colour, colour_from_ray(*ray));
                     ray->dir_x = light_height - ray->pos.x;
                     ray->dir_y = WORLD_SCALE - ray->pos.y;
                     ray->dir_z = light_height - ray->pos.z;
@@ -448,7 +439,7 @@ void traverse_node(Ray* ray, uint32_t octant_index, uint32_t scale) {
                     ray->inv_dir_z = 1.0f / ray->dir_z;
                     goto check_out_of_bounds;
                 } else if (ray->collisions == 2) {
-                    ray->colour = scale_Colour(ray->colour, 0.5);
+                    ray->colour = scale_colour(ray->colour, 0.5);
                     return;
                 }
             }
@@ -461,20 +452,19 @@ check_out_of_bounds:
         if (out_of_world(ray)) {
             ray->collisions++;
             if (ray->collisions == 1)
-                ray->colour = to_Colour(SKY);
+                ray->colour = SKY;
             return;
         }
         if (out_of_bounds(ray, scale)) return;
     }
 }
 
-int render_pixel(int screen_x, int screen_y, Camera c) {
+uint16_t render_pixel(int screen_x, int screen_y, Camera c) {
 
     Ray ray = start_rays[screen_x + screen_y*GAME_RES_WIDTH];
-    world_space_translation = (Point3){0,0,0};
     traverse_node(&ray, 0, WORLD_SCALE);
 
-    return ((ray.colour.r & 0xff) << 16) | ((ray.colour.g & 0xff) << 8) | (ray.colour.b & 0xff);
+    return ray.colour;
 }
 
 void render_world(Camera c) {
@@ -490,9 +480,15 @@ void render(HDC hdc) {
     StretchDIBits(hdc, 0, 0, windowWidth, windowHeight, 0, 0, GAME_RES_WIDTH, GAME_RES_HEIGHT, buffer.memory, &buffer.bitmapInfo, DIB_RGB_COLORS, SRCCOPY);
 }
 
-int get_voxel_colour(uint32_t x, uint32_t y, uint32_t z) {
-    uint32_t height = (int)(((float)WORLD_SCALE/8)*sin(x*8/(float)WORLD_SCALE) + ((float)WORLD_SCALE/8)*sin(z*8/(float)WORLD_SCALE) + (float)WORLD_SCALE/4);
-    if (y <= height) return 0xffffff;
+int16_t get_voxel_colour(uint32_t x, uint32_t y, uint32_t z) {
+    uint32_t height;
+    if (height_map[x + 2*z*WORLD_SCALE] == -1) {
+        height = (int)(((float)WORLD_SCALE/8)*sin(x*8/(float)WORLD_SCALE) + ((float)WORLD_SCALE/8)*sin(z*8/(float)WORLD_SCALE) + (float)WORLD_SCALE/4);
+        height_map[x + 2*z*WORLD_SCALE] = height;
+    } else
+        height = height_map[x + 2*z*WORLD_SCALE];
+
+    if (y <= height) return 0x7fff;
     return -1;
 }
 
@@ -507,15 +503,15 @@ uint8_t create_octree(uint32_t scale, uint32_t octant_index, uint32_t* next_octa
 
     octant_array[octant_index].occupancy = 0;
 
-    for (int z = 0; z < 2; z++) {
-        for (int y = 0; y < 2; y++) {
-            for (int x = 0; x < 2; x++) {
+    for (uint32_t z = 0; z < 2; z++) {
+        for (uint32_t y = 0; y < 2; y++) {
+            for (uint32_t x = 0; x < 2; x++) {
                 if (scale == 1) {
                     int c = get_voxel_colour((pos_x<<1)|x, (pos_y<<1)|y, (pos_z<<1)|z);
                     if (c == -1) {
-                        voxel_array[octant_array[octant_index].voxel_array_index + x + (y<<1) + (z<<2)] = (Voxel){to_Colour(0), 0};
+                        voxel_array[octant_array[octant_index].voxel_array_index + x + (y<<1) + (z<<2)] = (Voxel){0, 0};
                     } else {
-                        voxel_array[octant_array[octant_index].voxel_array_index + x + (y<<1) + (z<<2)] = (Voxel){to_Colour(c), 1};
+                        voxel_array[octant_array[octant_index].voxel_array_index + x + (y<<1) + (z<<2)] = (Voxel){c, 1};
                         octant_array[octant_index].occupancy |= 1<<(x + (y<<1) + (z<<2));
                     }
                 } else {
@@ -526,14 +522,26 @@ uint8_t create_octree(uint32_t scale, uint32_t octant_index, uint32_t* next_octa
             }
         }
     }
+    if (octant_array[octant_index].occupancy == 0) {
+        if (scale == 1)
+            *next_voxel_index -= 8;
+        else
+            *next_octant_index -= 8;
+    }
     return octant_array[octant_index].occupancy;
 }
 
 void create_world() {
+
+    for (int i = 0; i < 4*WORLD_SCALE*WORLD_SCALE; i++) {
+        height_map[i] = -1;
+    }
+
     uint32_t octant_array_index = 1;
     uint32_t voxel_array_index = 0;
-    octant_array = malloc((8*WORLD_SCALE*WORLD_SCALE*WORLD_SCALE - 1)/7 * sizeof(Octree));
-    voxel_array = malloc(8*WORLD_SCALE*WORLD_SCALE*WORLD_SCALE*sizeof(Voxel));
+    octant_array = malloc(((size_t)8*WORLD_SCALE*WORLD_SCALE*WORLD_SCALE - 1)/7 * sizeof(Octree));
+    voxel_array = malloc((size_t)8*WORLD_SCALE*WORLD_SCALE*WORLD_SCALE*sizeof(Voxel));
+    if (octant_array == NULL || voxel_array == NULL) exit(0);
     create_octree(WORLD_SCALE, 0, &octant_array_index, &voxel_array_index, 0, 0, 0);
 }
 
@@ -547,7 +555,6 @@ void fill_ray_pos_arrays() {
 }
 
 int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, int CmdShow) {
-
     fill_ray_pos_arrays();
     create_world();
 
@@ -617,7 +624,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
 
     UpdateWindow(windowHandle);
 
-    HDC hdc = GetDC(windowHandle);
+    hdc = GetDC(windowHandle);
 
     running = 1;
     MSG Msg;
@@ -648,12 +655,15 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
             fraction_of_update--;
         }
 
+        float pre_render = (float)clock() / CLOCKS_PER_SEC * 1000.f;
         render(hdc);
+        float post_render = (float)clock() / CLOCKS_PER_SEC * 1000.f;
+        int mspframe = post_render - pre_render;
         frames++;
 
         if ((float)clock()/CLOCKS_PER_SEC - timer > 1.0) {
             timer++;
-            sprintf(window_name, "%d | %d", frames, updates);
+            sprintf(window_name, "%dms | %dfps | %dtps", mspframe, frames, updates);
             SetWindowTextA(windowHandle, window_name);
             frames = 0;
             updates = 0;
