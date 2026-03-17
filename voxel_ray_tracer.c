@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <wchar.h>
 #include <windows.h>
 #include <math.h>
 #include <time.h>
@@ -17,9 +18,9 @@
 #define MONITOR_CENTER_H (monitorinfo.rcMonitor.left + monitorinfo.rcMonitor.right)/2
 #define MONITOR_CENTER_V (monitorinfo.rcMonitor.top + monitorinfo.rcMonitor.bottom)/2
 
-#define WORLD_SCALE 256
+#define WORLD_SCALE 1024
 
-#define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/16.0)
+#define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/2.0)
 
 #define pixel(x, y, colour) *((uint16_t*)buffer.memory + x + y*GAME_RES_WIDTH) = colour
 
@@ -56,13 +57,13 @@ typedef struct Voxel {
     unsigned short occupancy: 1;
 } Voxel;
 
-typedef struct Octree {
+typedef struct Brick {
     union {
-        uint64_t octant_array_index;
+        uint64_t brick_array_index;
         uint64_t voxel_array_index;
     };
-    uint8_t occupancy;
-} Octree;
+    uint64_t occupancy;
+} Brick;
 
 typedef struct {
     Point3 pos;
@@ -73,7 +74,7 @@ typedef struct {
 
 Camera camera;
 
-Octree* octant_array;
+Brick* brick_array;
 Voxel* voxel_array;
 
 HDC hdc;
@@ -91,7 +92,7 @@ float ray_y_pos_array[GAME_RES_HEIGHT];
 
 Ray start_rays[GAME_RES_WIDTH*GAME_RES_HEIGHT];
 
-int16_t height_map[4*WORLD_SCALE*WORLD_SCALE];
+int16_t height_map[WORLD_SCALE*WORLD_SCALE];
 
 float light_height;
 
@@ -205,10 +206,10 @@ void update() {
     char camera_rotated = 0;
 
 
-    light_height -= WORLD_SCALE*0.01f;
-    if (light_height <= 0) light_height += WORLD_SCALE*2.0f;
+    light_height -= WORLD_SCALE*0.005f;
+    if (light_height <= 0) light_height += WORLD_SCALE;
 
-    float v = WORLD_SCALE*0.025f;
+    float v = WORLD_SCALE*0.0125f;
 
     if (escape_key) SendMessageA(windowHandle, WM_SIZE, 0, 0);
 
@@ -270,11 +271,11 @@ void update() {
         camera_moved_y = 1;
     }
 
-    if (camera.pos.x > WORLD_SCALE << 1) camera.pos.x = WORLD_SCALE << 1;
+    if (camera.pos.x > WORLD_SCALE) camera.pos.x = WORLD_SCALE;
     if (camera.pos.x < 0) camera.pos.x = 0;
-    if (camera.pos.y > WORLD_SCALE << 1) camera.pos.y = WORLD_SCALE << 1;
+    if (camera.pos.y > WORLD_SCALE) camera.pos.y = WORLD_SCALE;
     if (camera.pos.y < 0) camera.pos.y = 0;
-    if (camera.pos.z > WORLD_SCALE << 1) camera.pos.z = WORLD_SCALE << 1;
+    if (camera.pos.z > WORLD_SCALE) camera.pos.z = WORLD_SCALE;
     if (camera.pos.z < 0) camera.pos.z = 0;
 
     if (camera_moved_xz
@@ -284,20 +285,20 @@ void update() {
 
 void advance_ray(Ray* ray, int scale) {
 
-    float octree_space_ray_x = (int)ray->pos.x & (-scale);
-    float octree_space_ray_y = (int)ray->pos.y & (-scale);
-    float octree_space_ray_z = (int)ray->pos.z & (-scale);
+    float brick_space_ray_x = (int)ray->pos.x & (-scale);
+    float brick_space_ray_y = (int)ray->pos.y & (-scale);
+    float brick_space_ray_z = (int)ray->pos.z & (-scale);
 
-    float dx = ray->pos.x - octree_space_ray_x;
-    float dy = ray->pos.y - octree_space_ray_y;
-    float dz = ray->pos.z - octree_space_ray_z;
+    float dx = ray->pos.x - brick_space_ray_x;
+    float dy = ray->pos.y - brick_space_ray_y;
+    float dz = ray->pos.z - brick_space_ray_z;
 
     if (!signbit(ray->dir_x)) dx -= scale;
-    else if (ray->pos.x == octree_space_ray_x) dx += scale;
+    else if (ray->pos.x == brick_space_ray_x) dx += scale;
     if (!signbit(ray->dir_y)) dy -= scale;
-    else if (ray->pos.y == octree_space_ray_y) dy += scale;
+    else if (ray->pos.y == brick_space_ray_y) dy += scale;
     if (!signbit(ray->dir_z)) dz -= scale;
-    else if (ray->pos.z == octree_space_ray_z) dz += scale;
+    else if (ray->pos.z == brick_space_ray_z) dz += scale;
 
     float t_x = fabsf(dx * ray->inv_dir_x);
     float t_y = fabsf(dy * ray->inv_dir_y);
@@ -360,10 +361,10 @@ Point3 get_normal(Ray ray) {
 extern inline float colour_from_ray(Ray ray) {
     Point3 normal = get_normal(ray);
     float dot_product = (light_height - ray.pos.x) * normal.x
-                        + (WORLD_SCALE - ray.pos.y) * normal.y
+                        + ((WORLD_SCALE>>1) - ray.pos.y) * normal.y
                         + (light_height - ray.pos.z) * normal.z;
     dot_product *= inv_modulus((light_height - ray.pos.x),
-                                (WORLD_SCALE - ray.pos.y),
+                                ((WORLD_SCALE>>1) - ray.pos.y),
                                 (light_height - ray.pos.z));
     return dot_product * 0.5 + 0.5;
 }
@@ -375,7 +376,7 @@ extern inline uint16_t scale_colour(uint16_t c, float scaler) {
     return b | (g<<5) | (r<<10);
 }
 
-extern inline uint8_t find_octant(Ray* ray, uint32_t scale) {
+extern inline uint8_t find_sub_brick(Ray* ray, uint32_t scale) {
 
     int x_pos = ray->pos.x;
     int y_pos = ray->pos.y;
@@ -385,36 +386,31 @@ extern inline uint8_t find_octant(Ray* ray, uint32_t scale) {
     if (y_pos == ray->pos.y && ray->dir_y < 0) y_pos--;
     if (z_pos == ray->pos.z && ray->dir_z < 0) z_pos--;
 
-    uint8_t octant = 0;
-    if (x_pos & scale) octant += 1;
-    if (y_pos & scale) octant += 2;
-    if (z_pos & scale) octant += 4;
-
-    return octant;
+    return ((x_pos & (3*scale))/scale) + (((y_pos & (3*scale))/scale)<<2) + (((z_pos & (3*scale))/scale)<<4);
 }
 
 extern inline int out_of_world(Ray* ray) {
-    return (ray->pos.x > (WORLD_SCALE << 1)) || (ray->pos.x < 0)
-        || (ray->pos.x == (WORLD_SCALE << 1) && ray->dir_x > 0) || (ray->pos.x == 0 && ray->dir_x < 0)
-        || (ray->pos.y > (WORLD_SCALE << 1)) || (ray->pos.y < 0)
-        || (ray->pos.y == (WORLD_SCALE << 1) && ray->dir_y > 0) || (ray->pos.y == 0 && ray->dir_y < 0)
-        || (ray->pos.z > (WORLD_SCALE << 1)) || (ray->pos.z < 0)
-        || (ray->pos.z == (WORLD_SCALE << 1) && ray->dir_z > 0) || (ray->pos.z == 0 && ray->dir_z < 0);
+    return (ray->pos.x > (WORLD_SCALE)) || (ray->pos.x < 0)
+        || (ray->pos.x == (WORLD_SCALE) && ray->dir_x > 0) || (ray->pos.x == 0 && ray->dir_x < 0)
+        || (ray->pos.y > (WORLD_SCALE)) || (ray->pos.y < 0)
+        || (ray->pos.y == (WORLD_SCALE) && ray->dir_y > 0) || (ray->pos.y == 0 && ray->dir_y < 0)
+        || (ray->pos.z > (WORLD_SCALE)) || (ray->pos.z < 0)
+        || (ray->pos.z == (WORLD_SCALE) && ray->dir_z > 0) || (ray->pos.z == 0 && ray->dir_z < 0);
 }
 
 extern inline int out_of_bounds(Ray* ray, int scale) {
-    int pos_x = (int)ray->pos.x;
-    int pos_y = (int)ray->pos.y;
-    int pos_z = (int)ray->pos.z;
+    int x_pos = ray->pos.x;
+    int y_pos = ray->pos.y;
+    int z_pos = ray->pos.z;
     
-    if (ray->pos.x == (pos_x & (-(scale<<1)))
-        || ray->pos.y == (pos_y & (-(scale<<1)))
-        || ray->pos.z == (pos_z & (-(scale<<1)))) return 1;
+    if (ray->pos.x == (x_pos & (-(scale<<2)))
+        || ray->pos.y == (y_pos & (-(scale<<2)))
+        || ray->pos.z == (z_pos & (-(scale<<2)))) return 1;
 
     return 0;
 }
 
-void traverse_node(Ray* ray, uint32_t octant_index, uint32_t scale) {
+void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale) {
     if (out_of_world(ray)) {
         ray->collisions++;
         if (ray->collisions == 1)
@@ -423,17 +419,16 @@ void traverse_node(Ray* ray, uint32_t octant_index, uint32_t scale) {
     }
 
     while (1) {
-        uint8_t octant = find_octant(ray, scale);
+        uint8_t sub_brick = find_sub_brick(ray, scale);
 
-        if (octant_array[octant_index].occupancy & (1 << octant)) {
+        if (brick_array[brick_index].occupancy & ((uint64_t)1 << sub_brick)) {
             if (scale == 1) {
                 ray->collisions++;
                 if (ray->collisions == 1) {
-                    ray->colour += voxel_array[octant_array[octant_index].voxel_array_index + octant].colour;
+                    ray->colour += voxel_array[brick_array[brick_index].voxel_array_index + sub_brick].colour;
                     ray->colour = scale_colour(ray->colour, colour_from_ray(*ray));
-                    return;
                     ray->dir_x = light_height - ray->pos.x;
-                    ray->dir_y = WORLD_SCALE - ray->pos.y;
+                    ray->dir_y = (WORLD_SCALE>>1) - ray->pos.y;
                     ray->dir_z = light_height - ray->pos.z;
                     ray->inv_dir_x = 1.0f / ray->dir_x;
                     ray->inv_dir_y = 1.0f / ray->dir_y;
@@ -444,8 +439,8 @@ void traverse_node(Ray* ray, uint32_t octant_index, uint32_t scale) {
                     return;
                 }
             }
-            traverse_node(ray, octant_array[octant_index].octant_array_index + octant, scale>>1);
-            if (ray->collisions < 1) goto check_out_of_bounds;
+            traverse_brick(ray, brick_array[brick_index].brick_array_index + sub_brick, scale>>2);
+            if (ray->collisions < 2) goto check_out_of_bounds;
             return;
         }
         advance_ray(ray, scale);
@@ -463,7 +458,7 @@ check_out_of_bounds:
 uint16_t render_pixel(int screen_x, int screen_y, Camera c) {
 
     Ray ray = start_rays[screen_x + screen_y*GAME_RES_WIDTH];
-    traverse_node(&ray, 0, WORLD_SCALE);
+    traverse_brick(&ray, 0, WORLD_SCALE>>2);
 
     return ray.colour;
 }
@@ -483,75 +478,76 @@ void render(HDC hdc) {
 
 int16_t get_voxel_colour(uint32_t x, uint32_t y, uint32_t z) {
     uint32_t height;
-    if (height_map[x + 2*z*WORLD_SCALE] == -1) {
-        height = (int)(((float)WORLD_SCALE/8)*sin(x*8/(float)WORLD_SCALE) + ((float)WORLD_SCALE/8)*sin(z*8/(float)WORLD_SCALE) + (float)WORLD_SCALE/4);
-        height_map[x + 2*z*WORLD_SCALE] = height;
+    if (height_map[x + z*WORLD_SCALE] == -1) {
+        height = (int)(((float)WORLD_SCALE/16)*sin(x*16/(float)WORLD_SCALE) + ((float)WORLD_SCALE/16)*sin(z*16/(float)WORLD_SCALE) + (float)WORLD_SCALE/8);
+        height_map[x + z*WORLD_SCALE] = height;
     } else
-        height = height_map[x + 2*z*WORLD_SCALE];
+        height = height_map[x + z*WORLD_SCALE];
 
-    if (y <= height) return 0x7fff;
+    if (y <= height) return 0x7fff;//(x&0x1f) + ((y&0x1f)<<5) + ((z&0x1f)<<10);
     return -1;
 }
 
-uint8_t create_octree(uint32_t scale, size_t octant_index, size_t* next_octant_index, size_t* next_voxel_index, uint32_t pos_x, uint32_t pos_y, uint32_t pos_z) {
+uint64_t create_brick(uint32_t scale, size_t brick_index, size_t* next_brick_index, size_t* next_voxel_index, uint32_t pos_x, uint32_t pos_y, uint32_t pos_z) {
     if (scale == 1) {
-        octant_array[octant_index].voxel_array_index = *next_voxel_index;
-        *next_voxel_index += 8;
+        brick_array[brick_index].voxel_array_index = *next_voxel_index;
+        *next_voxel_index += 64;
     } else {
-        octant_array[octant_index].octant_array_index = *next_octant_index;
-        *next_octant_index += 8;
+        brick_array[brick_index].brick_array_index = *next_brick_index;
+        *next_brick_index += 64;
     }
 
-    octant_array[octant_index].occupancy = 0;
+    brick_array[brick_index].occupancy = 0;
 
-    for (uint32_t z = 0; z < 2; z++) {
-        for (uint32_t y = 0; y < 2; y++) {
-            for (uint32_t x = 0; x < 2; x++) {
+    for (uint8_t z = 0; z < 4; z++) {
+        for (uint8_t y = 0; y < 4; y++) {
+            for (uint8_t x = 0; x < 4; x++) {
                 if (scale == 1) {
-                    int c = get_voxel_colour((pos_x<<1)|x, (pos_y<<1)|y, (pos_z<<1)|z);
+                    int16_t c = get_voxel_colour((pos_x<<2)|x, (pos_y<<2)|y, (pos_z<<2)|z);
                     if (c == -1) {
-                        voxel_array[octant_array[octant_index].voxel_array_index + x + (y<<1) + (z<<2)] = (Voxel){0, 0};
+                        voxel_array[brick_array[brick_index].voxel_array_index + x + (y<<2) + (z<<4)] = (Voxel){0, 0};
                     } else {
-                        voxel_array[octant_array[octant_index].voxel_array_index + x + (y<<1) + (z<<2)] = (Voxel){c, 1};
-                        octant_array[octant_index].occupancy |= 1<<(x + (y<<1) + (z<<2));
+                        voxel_array[brick_array[brick_index].voxel_array_index + x + (y<<2) + (z<<4)] = (Voxel){c, 1};
+                        brick_array[brick_index].occupancy |= (uint64_t)1<<(x + (y<<2) + (z<<4));
                     }
                 } else {
-                    if (create_octree(scale >> 1, octant_array[octant_index].octant_array_index + x + (y<<1) + (z<<2), next_octant_index, next_voxel_index, (pos_x<<1)|x, (pos_y<<1)|y, (pos_z<<1)|z)) {
-                        octant_array[octant_index].occupancy |= 1<<(x + (y<<1) + (z<<2));
+                    if (create_brick(scale >> 2, brick_array[brick_index].brick_array_index + x + (y<<2) + (z<<4), next_brick_index, next_voxel_index, (pos_x<<2)|x, (pos_y<<2)|y, (pos_z<<2)|z)) {
+                        brick_array[brick_index].occupancy |= (uint64_t)1<<(x + (y<<2) + (z<<4));
                     }
                 }
             }
         }
     }
-    if (octant_array[octant_index].occupancy == 0) {
+    if (brick_array[brick_index].occupancy == 0) {
         if (scale == 1)
-            *next_voxel_index -= 8;
+            *next_voxel_index -= 64;
         else
-            *next_octant_index -= 8;
+            *next_brick_index -= 64;
     }
-    return octant_array[octant_index].occupancy;
+    return brick_array[brick_index].occupancy;
 }
 
 void create_world() {
 
-    for (int i = 0; i < 4*WORLD_SCALE*WORLD_SCALE; i++) {
+    for (int i = 0; i < WORLD_SCALE*WORLD_SCALE; i++) {
         height_map[i] = -1;
     }
 
-    size_t octant_array_index = 1;
+    size_t brick_array_index = 1;
     size_t voxel_array_index = 0;
-    octant_array = malloc(((size_t)8*WORLD_SCALE*WORLD_SCALE*WORLD_SCALE - 1)/7 * sizeof(Octree));
-    if (!octant_array) {
-        printf("octant_array required too  much memory\n");
+    brick_array = malloc(((size_t)WORLD_SCALE*WORLD_SCALE*WORLD_SCALE - 1)/7 * sizeof(Brick));
+    if (!brick_array) {
+        printf("brick_array required too  much memory\n");
         exit(0);
     }
-    voxel_array = malloc((size_t)8*WORLD_SCALE*WORLD_SCALE*WORLD_SCALE*sizeof(Voxel));
+    voxel_array = malloc((size_t)WORLD_SCALE*WORLD_SCALE*WORLD_SCALE*sizeof(Voxel));
     if (!voxel_array) {
         printf("voxel_array required too  much memory\n");
         exit(0);
     }
-    create_octree(WORLD_SCALE, 0, &octant_array_index, &voxel_array_index, 0, 0, 0);
+    create_brick(WORLD_SCALE>>2, 0, &brick_array_index, &voxel_array_index, 0, 0, 0);
 }
+
 
 void fill_ray_pos_arrays() {
     for (int x = 0; x < GAME_RES_WIDTH; x++) {
@@ -566,7 +562,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
     fill_ray_pos_arrays();
     create_world();
 
-    camera = (Camera){(Point3){WORLD_SCALE, WORLD_SCALE, WORLD_SCALE}, 0, 0, 0, 0, 0, 0, 2.0944, 0};
+    camera = (Camera){(Point3){WORLD_SCALE>>1, WORLD_SCALE>>1, WORLD_SCALE>>1}, 0, 0, 0, 0, 0, 0, 2.0944, 0};
     camera.cos_pitch = cos(camera.pitch);
     camera.sin_pitch = sin(camera.pitch);
     camera.cos_yaw = cos(camera.yaw);
@@ -647,7 +643,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
 
     char window_name[30];
 
-    light_height = WORLD_SCALE<<1;
+    light_height = WORLD_SCALE;
 
     while (running) {
         while (PeekMessageA(&Msg, NULL, 0, 0, PM_REMOVE)) {
