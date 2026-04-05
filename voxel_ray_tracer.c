@@ -10,8 +10,8 @@
 #define INITIAL_WINDOW_WIDTH 768
 #define INITIAL_WINDOW_HEIGHT 432
 
-#define GAME_RES_WIDTH  1280
-#define GAME_RES_HEIGHT 720
+#define GAME_RES_WIDTH  640
+#define GAME_RES_HEIGHT 360
 #define GAME_BPP        32
 #define GAME_BITMAP_MEM_SIZE (GAME_RES_WIDTH * GAME_RES_HEIGHT * (GAME_BPP / 8))
 
@@ -19,7 +19,7 @@
 #define MONITOR_CENTER_V (monitorinfo.rcMonitor.top + monitorinfo.rcMonitor.bottom)/2
 
 #define WORLD_SCALE     1024
-#define WORLD_MAX_DEPTH 5
+#define LOG_WORLD_SCALE 10
 
 #define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/2.0)
 
@@ -209,7 +209,6 @@ void update() {
     char camera_moved_y = 0;
     char camera_rotated = 0;
 
-
     light_height -= WORLD_SCALE*0.005f;
     if (light_height <= 0) light_height += WORLD_SCALE;
 
@@ -330,36 +329,36 @@ extern inline uint32_t scale_colour(uint32_t c, float scaler) {
     return b | (g<<8) | (r<<16);
 }
 
-uint64_t potential_occupancy_mask_x_pos[] = {0xffffffffffffffff, 0xeeeeeeeeeeeeeeee, 0xcccccccccccccccc, 0x8888888888888888};
-uint64_t potential_occupancy_mask_x_neg[] = {0x1111111111111111, 0x3333333333333333, 0x7777777777777777, 0xffffffffffffffff};
-uint64_t potential_occupancy_mask_y_pos[] = {0xffffffffffffffff, 0xfff0fff0fff0fff0, 0xff00ff00ff00ff00, 0xf000f000f000f000};
-uint64_t potential_occupancy_mask_y_neg[] = {0x000f000f000f000f, 0x00ff00ff00ff00ff, 0x0fff0fff0fff0fff, 0xffffffffffffffff};
-uint64_t potential_occupancy_mask_z_neg[] = {0x000000000000ffff, 0x00000000ffffffff, 0x0000ffffffffffff, 0xffffffffffffffff};
-uint64_t potential_occupancy_mask_z_pos[] = {0xffffffffffffffff, 0xffffffffffff0000, 0xffffffff00000000, 0xffff000000000000};
+uint64_t potential_occupancy_mask(uint8_t sub_brick_index, float3 inv_dir) {
 
-uint64_t potential_occupancy_mask(uint32_t3 pos, float3 inv_dir) {
+    uint64_t potential_occupancy_mask_x_pos[] = {0xffffffffffffffff, 0xeeeeeeeeeeeeeeee, 0xcccccccccccccccc, 0x8888888888888888};
+    uint64_t potential_occupancy_mask_x_neg[] = {0x1111111111111111, 0x3333333333333333, 0x7777777777777777, 0xffffffffffffffff};
+    uint64_t potential_occupancy_mask_y_pos[] = {0xffffffffffffffff, 0xfff0fff0fff0fff0, 0xff00ff00ff00ff00, 0xf000f000f000f000};
+    uint64_t potential_occupancy_mask_y_neg[] = {0x000f000f000f000f, 0x00ff00ff00ff00ff, 0x0fff0fff0fff0fff, 0xffffffffffffffff};
+    uint64_t potential_occupancy_mask_z_neg[] = {0x000000000000ffff, 0x00000000ffffffff, 0x0000ffffffffffff, 0xffffffffffffffff};
+    uint64_t potential_occupancy_mask_z_pos[] = {0xffffffffffffffff, 0xffffffffffff0000, 0xffffffff00000000, 0xffff000000000000};
 
     uint64_t mask_x, mask_y, mask_z;
 
     if (inv_dir.x > 0)
-        mask_x = potential_occupancy_mask_x_pos[pos.x];
+        mask_x = potential_occupancy_mask_x_pos[sub_brick_index&3];
     else
-        mask_x = potential_occupancy_mask_x_neg[pos.x];
+        mask_x = potential_occupancy_mask_x_neg[sub_brick_index&3];
 
     if (inv_dir.y > 0)
-        mask_y = potential_occupancy_mask_y_pos[pos.y];
+        mask_y = potential_occupancy_mask_y_pos[(sub_brick_index>>2)&3];
     else
-        mask_y = potential_occupancy_mask_y_neg[pos.y];
+        mask_y = potential_occupancy_mask_y_neg[(sub_brick_index>>2)&3];
 
     if (inv_dir.z > 0)
-        mask_z = potential_occupancy_mask_z_pos[pos.z];
+        mask_z = potential_occupancy_mask_z_pos[(sub_brick_index>>4)&3];
     else
-        mask_z = potential_occupancy_mask_z_neg[pos.z];
+        mask_z = potential_occupancy_mask_z_neg[(sub_brick_index>>4)&3];
 
     return mask_x & mask_y & mask_z;
 }
 
-void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t max_depth) {
+void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t log_scale) {
 
     uint32_t init_x = (uint32_t)ray->pos.x & (-scale);
     uint32_t init_y = (uint32_t)ray->pos.y & (-scale);
@@ -399,28 +398,34 @@ void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t max_
 
     int8_t last_step = -1;
 
-    for (;;) {
-        uint32_t sub_brick_index = ((x>>(max_depth<<1))&3) + (((y>>(max_depth<<1))&3)<<2) + (((z>>(max_depth<<1))&3)<<4);
+    int8_t sub_brick_index_step_x = sign(ray->inv_dir.x);
+    int8_t sub_brick_index_step_y = 4*sign(ray->inv_dir.y);
+    int8_t sub_brick_index_step_z = 16*sign(ray->inv_dir.z);
 
+    uint8_t sub_brick_index = ((x>>log_scale)&3) + (((y>>log_scale)&3)<<2) + (((z>>log_scale)&3)<<4);
+
+    uint32_t3 edge_offset;
+    edge_offset.x = (ray->inv_dir.x < 0) ? scale : 0;
+    edge_offset.y = (ray->inv_dir.y < 0) ? scale : 0;
+    edge_offset.z = (ray->inv_dir.z < 0) ? scale : 0;
+
+    for (;;) {
         if (brick_array[brick_index].occupancy & ((uint64_t)1 << sub_brick_index)) {
             switch(last_step) {
                 case 0:
-                    ray->pos.x = x;
-                    if (ray->inv_dir.x < 0) ray->pos.x += scale;
+                    ray->pos.x = x + edge_offset.x;
                     ray->pos.y = init_ray_pos_y + curr_t.x*ray->dir.y;
                     ray->pos.z = init_ray_pos_z + curr_t.x*ray->dir.z;
                     break;
                 case 1:
                     ray->pos.x = init_ray_pos_x + curr_t.y*ray->dir.x;
-                    ray->pos.y = y;
-                    if (ray->inv_dir.y < 0) ray->pos.y += scale;
+                    ray->pos.y = y + edge_offset.y;
                     ray->pos.z = init_ray_pos_z + curr_t.y*ray->dir.z;
                     break;
                 case 2:
                     ray->pos.x = init_ray_pos_x + curr_t.z*ray->dir.x;
                     ray->pos.y = init_ray_pos_y + curr_t.z*ray->dir.y;
-                    ray->pos.z = z;
-                    if (ray->inv_dir.z < 0) ray->pos.z += scale;
+                    ray->pos.z = z + edge_offset.z;
                     break;
             }
             if (scale == 1) {
@@ -429,7 +434,7 @@ void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t max_
                 return;
                 ray->colour = scale_colour(ray->colour, colour_from_ray(*ray));
             } else {
-                traverse_brick(ray, brick_array[brick_index].brick_array_index + sub_brick_index, scale>>2, max_depth-1);
+                traverse_brick(ray, brick_array[brick_index].brick_array_index + sub_brick_index, scale>>2, log_scale-2);
                 if (ray->collisions >= 1) return;
             }
         }
@@ -437,31 +442,22 @@ void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t max_
         if (next_t.x <= next_t.y && next_t.x <= next_t.z) {
             last_step = 0;
             x += step.x;
-            if (ray->inv_dir.x < 0) {
-                if ((x & (3*scale)) == 3*scale) return;
-            } else {
-                if ((x & (3*scale)) == 0) return;
-            }
+            if (((x + edge_offset.x) & (3*scale)) == 0) return;
+            sub_brick_index += sub_brick_index_step_x;
             curr_t.x = next_t.x;
             next_t.x += t_step.x;
         } else if (next_t.y <= next_t.z) {
             last_step = 1;
             y += step.y;
-            if (ray->inv_dir.y < 0) {
-                if ((y & (3*scale)) == 3*scale) return;
-            } else {
-                if ((y & (3*scale)) == 0) return;
-            }
+            if (((y + edge_offset.y) & (3*scale)) == 0) return;
+            sub_brick_index += sub_brick_index_step_y;
             curr_t.y = next_t.y;
             next_t.y += t_step.y;
         } else {
             last_step = 2;
             z += step.z;
-            if (ray->inv_dir.z < 0) {
-                if ((z & (3*scale)) == 3*scale) return;
-            } else {
-                if ((z & (3*scale)) == 0) return;
-            }
+            if (((z + edge_offset.z) & (3*scale)) == 0) return;
+            sub_brick_index += sub_brick_index_step_z;
             curr_t.z = next_t.z;
             next_t.z += t_step.z;
         }
@@ -485,7 +481,7 @@ uint32_t render_pixel(int screen_x, int screen_y, Camera c) {
         return SKY;
     }
 
-    traverse_brick(&ray, 0, WORLD_SCALE>>2, WORLD_MAX_DEPTH-1);
+    traverse_brick(&ray, 0, WORLD_SCALE>>2, LOG_WORLD_SCALE-2);
 
     if (ray.collisions == 0) return SKY;
 
