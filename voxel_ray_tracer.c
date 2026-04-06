@@ -482,7 +482,7 @@ int advance_ray_into_world(Ray* ray) {
     float t_first_edge = fmaxf(fmaxf(min_t.x, min_t.y), min_t.z);
     float t_second_edge = fminf(fminf(max_t.x, max_t.y), max_t.z);
 
-    if (t_first_edge > t_second_edge) return 0;
+    if (t_first_edge > t_second_edge || t_first_edge < 0) return 0;
 
     ray->pos.x += (t_first_edge + 0.001) * ray->dir.x;
     ray->pos.y += (t_first_edge + 0.001) * ray->dir.y;
