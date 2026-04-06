@@ -274,13 +274,6 @@ void update() {
         camera_moved_y = 1;
     }
 
-    if (camera.pos.x > WORLD_SCALE) camera.pos.x = WORLD_SCALE;
-    if (camera.pos.x < 0) camera.pos.x = 0;
-    if (camera.pos.y > WORLD_SCALE) camera.pos.y = WORLD_SCALE;
-    if (camera.pos.y < 0) camera.pos.y = 0;
-    if (camera.pos.z > WORLD_SCALE) camera.pos.z = WORLD_SCALE;
-    if (camera.pos.z < 0) camera.pos.z = 0;
-
     if (camera_moved_xz
             || camera_moved_y
             || camera_rotated) update_start_rays(camera_moved_xz, camera_moved_y, camera_rotated);
@@ -464,6 +457,40 @@ void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t log_
     }
 }
 
+int advance_ray_into_world(Ray* ray) {
+    float3 edge_0_t;
+    edge_0_t.x = -ray->pos.x * ray->inv_dir.x;
+    edge_0_t.y = -ray->pos.y * ray->inv_dir.y;
+    edge_0_t.z = -ray->pos.z * ray->inv_dir.z;
+
+    float3 edge_1_t;
+    edge_1_t.x = (WORLD_SCALE-ray->pos.x)*ray->inv_dir.x;
+    edge_1_t.y = (WORLD_SCALE-ray->pos.y)*ray->inv_dir.y;
+    edge_1_t.z = (WORLD_SCALE-ray->pos.z)*ray->inv_dir.z;
+
+    float3 min_t;
+    float3 max_t;
+
+    min_t.x = (edge_0_t.x < edge_1_t.x) ? edge_0_t.x : edge_1_t.x;
+    min_t.y = (edge_0_t.y < edge_1_t.y) ? edge_0_t.y : edge_1_t.y;
+    min_t.z = (edge_0_t.z < edge_1_t.z) ? edge_0_t.z : edge_1_t.z;
+
+    max_t.x = (edge_0_t.x > edge_1_t.x) ? edge_0_t.x : edge_1_t.x;
+    max_t.y = (edge_0_t.y > edge_1_t.y) ? edge_0_t.y : edge_1_t.y;
+    max_t.z = (edge_0_t.z > edge_1_t.z) ? edge_0_t.z : edge_1_t.z;
+
+    float t_first_edge = fmaxf(fmaxf(min_t.x, min_t.y), min_t.z);
+    float t_second_edge = fminf(fminf(max_t.x, max_t.y), max_t.z);
+
+    if (t_first_edge > t_second_edge) return 0;
+
+    ray->pos.x += (t_first_edge + 0.001) * ray->dir.x;
+    ray->pos.y += (t_first_edge + 0.001) * ray->dir.y;
+    ray->pos.z += (t_first_edge + 0.001) * ray->dir.z;
+
+    return 1;
+}
+
 int out_of_world(Ray* ray) {
     return (ray->pos.x > (WORLD_SCALE)) || (ray->pos.x < 0)
         || (ray->pos.x == (WORLD_SCALE) && ray->dir.x > 0) || (ray->pos.x == 0 && ray->dir.x < 0)
@@ -477,7 +504,7 @@ uint32_t render_pixel(int screen_x, int screen_y, Camera c) {
 
     Ray ray = start_rays[screen_x + screen_y*GAME_RES_WIDTH];
 
-    if (out_of_world(&ray)) {
+    if (out_of_world(&ray) && !advance_ray_into_world(&ray)) {
         return SKY;
     }
 
