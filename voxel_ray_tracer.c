@@ -10,8 +10,8 @@
 #define INITIAL_WINDOW_WIDTH 768
 #define INITIAL_WINDOW_HEIGHT 432
 
-#define GAME_RES_WIDTH  1280
-#define GAME_RES_HEIGHT 720
+#define GAME_RES_WIDTH  640
+#define GAME_RES_HEIGHT 360
 #define GAME_BPP        32
 #define GAME_BITMAP_MEM_SIZE (GAME_RES_WIDTH * GAME_RES_HEIGHT * (GAME_BPP / 8))
 
@@ -99,6 +99,8 @@ Ray start_rays[GAME_RES_WIDTH*GAME_RES_HEIGHT];
 int32_t height_map[WORLD_SCALE*WORLD_SCALE];
 
 float light_height;
+
+int speed = 1;
 
 void render(HDC hdc);
 
@@ -198,6 +200,9 @@ void update() {
     short a = GetAsyncKeyState('A');
     short s = GetAsyncKeyState('S');
     short d = GetAsyncKeyState('D');
+    short q = GetAsyncKeyState('Q');
+    short e = GetAsyncKeyState('E');
+    short f = GetAsyncKeyState('F');
     short space_key = GetAsyncKeyState(VK_SPACE);
     short shift_key = GetAsyncKeyState(VK_SHIFT);
     short up_arrow = GetAsyncKeyState(VK_UP);
@@ -212,7 +217,10 @@ void update() {
     light_height -= WORLD_SCALE*0.005f;
     if (light_height <= 0) light_height += WORLD_SCALE;
 
-    float v = WORLD_SCALE*0.0125f;
+    if (q) speed = 0;
+    if (e) speed = 1;
+    if (f) speed = 2;
+    float v = (speed == 1) ? WORLD_SCALE*0.0125f : (speed == 0) ? WORLD_SCALE*0.003375f : WORLD_SCALE*0.05f;
 
     if (escape_key) SendMessageA(windowHandle, WM_SIZE, 0, 0);
 
@@ -421,7 +429,7 @@ void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t log_
             if (scale == 1) {
                 ray->collisions++;
                 ray->colour = voxel_array[brick_array[brick_index].voxel_array_index + sub_brick_index].colour;
-                //ray->colour = scale_colour(ray->colour, colour_from_ray(*ray));
+                ray->colour = scale_colour(ray->colour, colour_from_ray(*ray));
                 return;
             } else {
                 traverse_brick(ray, brick_array[brick_index].brick_array_index + sub_brick_index, scale>>2, log_scale-2);
@@ -528,12 +536,14 @@ void render(HDC hdc) {
 int32_t get_voxel_colour(uint32_t x, uint32_t y, uint32_t z) {
     uint32_t height;
     if (height_map[x + z*WORLD_SCALE] == -1) {
-        height = (int)(((float)WORLD_SCALE/16)*sin(x*16/(float)WORLD_SCALE) + ((float)WORLD_SCALE/16)*sin(z*16/(float)WORLD_SCALE) + (float)WORLD_SCALE/8);
+        //height = (int)(((float)WORLD_SCALE/16)*sin(x*16/(float)WORLD_SCALE) + ((float)WORLD_SCALE/16)*sin(z*16/(float)WORLD_SCALE) + (float)WORLD_SCALE/8);
+        height = WORLD_SCALE;
         height_map[x + z*WORLD_SCALE] = height;
-    } else
+    } else {
         height = height_map[x + z*WORLD_SCALE];
+    }
 
-    if (y <= height) return (x&0xff) + ((y&0xff)<<8) + ((z&0xff)<<16);
+    if (y <= height) return ((x*255/(WORLD_SCALE-1))&0xff) + (((y*255/(WORLD_SCALE-1))&0xff)<<8) + (((z*255/(WORLD_SCALE-1))&0xff)<<16);
     return -1;
 }
 
@@ -561,7 +571,8 @@ uint64_t create_brick(uint32_t scale, size_t brick_index, size_t* next_brick_ind
                     }
                 } else {
                     if (create_brick(scale >> 2, brick_array[brick_index].brick_array_index + x + (y<<2) + (z<<4), next_brick_index, next_voxel_index, (pos_x<<2)|x, (pos_y<<2)|y, (pos_z<<2)|z)) {
-                        brick_array[brick_index].occupancy |= (uint64_t)1<<(x + (y<<2) + (z<<4));
+                        if (rand() % 2 != 0)
+                            brick_array[brick_index].occupancy |= (uint64_t)1<<(x + (y<<2) + (z<<4));
                     }
                 }
             }
@@ -577,6 +588,8 @@ uint64_t create_brick(uint32_t scale, size_t brick_index, size_t* next_brick_ind
 }
 
 void create_world() {
+
+    srand(time(NULL));
 
     for (int i = 0; i < WORLD_SCALE*WORLD_SCALE; i++) {
         height_map[i] = -1;
@@ -611,8 +624,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
     fill_ray_pos_arrays();
     create_world();
 
-    //camera = (Camera){(float3){WORLD_SCALE>>1, WORLD_SCALE>>1, WORLD_SCALE>>1}, 0, 0, 0, 0, 0, 0, 2.0944, 0};
-    camera = (Camera){(float3){508.296722, 153.600220, 704.721497}, -0.488692, 1.535891, 0, 0, 0, 0, 2.0944, 0};
+    camera = (Camera){(float3){WORLD_SCALE>>1, WORLD_SCALE>>1, WORLD_SCALE>>1}, 0, 0, 0, 0, 0, 0, 2.0944, 0};
     camera.cos_pitch = cos(camera.pitch);
     camera.sin_pitch = sin(camera.pitch);
     camera.cos_yaw = cos(camera.yaw);
