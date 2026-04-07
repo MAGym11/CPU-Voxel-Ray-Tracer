@@ -10,8 +10,8 @@
 #define INITIAL_WINDOW_WIDTH 768
 #define INITIAL_WINDOW_HEIGHT 432
 
-#define GAME_RES_WIDTH  640
-#define GAME_RES_HEIGHT 360
+#define GAME_RES_WIDTH  1280
+#define GAME_RES_HEIGHT 720
 #define GAME_BPP        32
 #define GAME_BITMAP_MEM_SIZE (GAME_RES_WIDTH * GAME_RES_HEIGHT * (GAME_BPP / 8))
 
@@ -356,14 +356,11 @@ void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t log_
     uint32_t init_x = (uint32_t)ray->pos.x & (-scale);
     uint32_t init_y = (uint32_t)ray->pos.y & (-scale);
     uint32_t init_z = (uint32_t)ray->pos.z & (-scale);
-
     if (ray->inv_dir.x < 0 && ray->pos.x != init_x) init_x += scale;
     if (ray->inv_dir.y < 0 && ray->pos.y != init_y) init_y += scale;
     if (ray->inv_dir.z < 0 && ray->pos.z != init_z) init_z += scale;
 
-    float init_ray_pos_x = ray->pos.x;
-    float init_ray_pos_y = ray->pos.y;
-    float init_ray_pos_z = ray->pos.z;
+    float3 init_ray_pos = ray->pos;
 
     int32_t3 step;
     step.x = scale*sign(ray->inv_dir.x);
@@ -375,7 +372,7 @@ void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t log_
     t_step.y = step.y*ray->inv_dir.y;
     t_step.z = step.z*ray->inv_dir.z;
 
-    float3 curr_t = {0,0,0};
+    float curr_t = 0;
 
     uint32_t x = (uint32_t)ray->pos.x & (-scale);
     uint32_t y = (uint32_t)ray->pos.y & (-scale);
@@ -389,7 +386,7 @@ void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t log_
     next_t.y = (init_y + step.y - ray->pos.y)*ray->inv_dir.y;
     next_t.z = (init_z + step.z - ray->pos.z)*ray->inv_dir.z;
 
-    int8_t last_step = -1;
+    uint8_t last_step = 0;
 
     int8_t sub_brick_index_step_x = sign(ray->inv_dir.x);
     int8_t sub_brick_index_step_y = 4*sign(ray->inv_dir.y);
@@ -405,53 +402,53 @@ void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t log_
     for (;;) {
         if (brick_array[brick_index].occupancy & ((uint64_t)1 << sub_brick_index)) {
             switch(last_step) {
-                case 0:
-                    ray->pos.x = x + edge_offset.x;
-                    ray->pos.y = init_ray_pos_y + curr_t.x*ray->dir.y;
-                    ray->pos.z = init_ray_pos_z + curr_t.x*ray->dir.z;
-                    break;
                 case 1:
-                    ray->pos.x = init_ray_pos_x + curr_t.y*ray->dir.x;
-                    ray->pos.y = y + edge_offset.y;
-                    ray->pos.z = init_ray_pos_z + curr_t.y*ray->dir.z;
+                    ray->pos.x = x + edge_offset.x;
+                    ray->pos.y = init_ray_pos.y + curr_t*ray->dir.y;
+                    ray->pos.z = init_ray_pos.z + curr_t*ray->dir.z;
                     break;
                 case 2:
-                    ray->pos.x = init_ray_pos_x + curr_t.z*ray->dir.x;
-                    ray->pos.y = init_ray_pos_y + curr_t.z*ray->dir.y;
+                    ray->pos.x = init_ray_pos.x + curr_t*ray->dir.x;
+                    ray->pos.y = y + edge_offset.y;
+                    ray->pos.z = init_ray_pos.z + curr_t*ray->dir.z;
+                    break;
+                case 3:
+                    ray->pos.x = init_ray_pos.x + curr_t*ray->dir.x;
+                    ray->pos.y = init_ray_pos.y + curr_t*ray->dir.y;
                     ray->pos.z = z + edge_offset.z;
                     break;
             }
             if (scale == 1) {
                 ray->collisions++;
-                ray->colour += voxel_array[brick_array[brick_index].voxel_array_index + sub_brick_index].colour;
+                ray->colour = voxel_array[brick_array[brick_index].voxel_array_index + sub_brick_index].colour;
+                //ray->colour = scale_colour(ray->colour, colour_from_ray(*ray));
                 return;
-                ray->colour = scale_colour(ray->colour, colour_from_ray(*ray));
             } else {
                 traverse_brick(ray, brick_array[brick_index].brick_array_index + sub_brick_index, scale>>2, log_scale-2);
                 if (ray->collisions >= 1) return;
             }
         }
-
+        
         if (next_t.x <= next_t.y && next_t.x <= next_t.z) {
-            last_step = 0;
             x += step.x;
             if (((x + edge_offset.x) & (3*scale)) == 0) return;
+            last_step = 1;
             sub_brick_index += sub_brick_index_step_x;
-            curr_t.x = next_t.x;
+            curr_t = next_t.x;
             next_t.x += t_step.x;
         } else if (next_t.y <= next_t.z) {
-            last_step = 1;
             y += step.y;
             if (((y + edge_offset.y) & (3*scale)) == 0) return;
+            last_step = 2;
             sub_brick_index += sub_brick_index_step_y;
-            curr_t.y = next_t.y;
+            curr_t = next_t.y;
             next_t.y += t_step.y;
         } else {
-            last_step = 2;
             z += step.z;
             if (((z + edge_offset.z) & (3*scale)) == 0) return;
+            last_step = 3;
             sub_brick_index += sub_brick_index_step_z;
-            curr_t.z = next_t.z;
+            curr_t = next_t.z;
             next_t.z += t_step.z;
         }
     }
@@ -614,7 +611,8 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
     fill_ray_pos_arrays();
     create_world();
 
-    camera = (Camera){(float3){WORLD_SCALE>>1, WORLD_SCALE>>1, WORLD_SCALE>>1}, 0, 0, 0, 0, 0, 0, 2.0944, 0};
+    //camera = (Camera){(float3){WORLD_SCALE>>1, WORLD_SCALE>>1, WORLD_SCALE>>1}, 0, 0, 0, 0, 0, 0, 2.0944, 0};
+    camera = (Camera){(float3){508.296722, 153.600220, 704.721497}, -0.488692, 1.535891, 0, 0, 0, 0, 2.0944, 0};
     camera.cos_pitch = cos(camera.pitch);
     camera.sin_pitch = sin(camera.pitch);
     camera.cos_yaw = cos(camera.yaw);
@@ -718,7 +716,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
         frames++;
 
         if ((float)clock()/CLOCKS_PER_SEC - timer > 1.0) {
-            timer++;
+            timer += 1;
             sprintf(window_name, "%dms | %dfps | %dtps", mspframe, frames, updates);
             SetWindowTextA(windowHandle, window_name);
             frames = 0;
