@@ -95,6 +95,7 @@ float ray_x_pos_array[GAME_RES_WIDTH];
 float ray_y_pos_array[GAME_RES_HEIGHT];
 
 Ray start_rays[GAME_RES_WIDTH*GAME_RES_HEIGHT];
+float ray_dir_normalise_factors[GAME_RES_WIDTH*GAME_RES_HEIGHT];
 
 int32_t height_map[WORLD_SCALE*WORLD_SCALE];
 
@@ -145,10 +146,6 @@ extern inline Ray rotate_yaw(Ray ray, Camera c) {
     new_ray.dir.y = ray.dir.y;
     new_ray.dir.z = ray.dir.z*c.cos_yaw + ray.dir.x*c.sin_yaw;
 
-    new_ray.inv_dir.x = 1.0f / new_ray.dir.x;
-    new_ray.inv_dir.y = 1.0f / new_ray.dir.y;
-    new_ray.inv_dir.z = 1.0f / new_ray.dir.z;
-
     return new_ray;
 }
 
@@ -169,26 +166,35 @@ extern inline Ray rotate_pitch(Ray ray, Camera c) {
 void update_start_rays(char camera_moved_xz, char camera_moved_y, char camera_rotated) {
     for (int y = 0; y < GAME_RES_HEIGHT; y++) {
         for (int x = 0; x < GAME_RES_WIDTH; x++) {
+            int index = x + y*GAME_RES_WIDTH;
             if (camera_rotated) {
-                start_rays[x + y*GAME_RES_WIDTH].pos.x = ray_x_pos_array[x];
-                start_rays[x + y*GAME_RES_WIDTH].pos.y = ray_y_pos_array[y];
+                start_rays[index].pos.x = ray_x_pos_array[x];
+                start_rays[index].pos.y = ray_y_pos_array[y];
 
-                start_rays[x + y*GAME_RES_WIDTH].dir.x = ray_x_pos_array[x];
-                start_rays[x + y*GAME_RES_WIDTH].dir.y = ray_y_pos_array[y];
-                start_rays[x + y*GAME_RES_WIDTH].dir.z = -camera.focal_point;
+                start_rays[index].dir.x = ray_x_pos_array[x];
+                start_rays[index].dir.y = ray_y_pos_array[y];
+                start_rays[index].dir.z = -camera.focal_point;
 
-                start_rays[x + y*GAME_RES_WIDTH] = rotate_pitch(start_rays[x + y*GAME_RES_WIDTH], camera);
-                start_rays[x + y*GAME_RES_WIDTH] = rotate_yaw(start_rays[x + y*GAME_RES_WIDTH], camera);
+                start_rays[index] = rotate_pitch(start_rays[index], camera);
+                start_rays[index] = rotate_yaw(start_rays[index], camera);
 
-                start_rays[x + y*GAME_RES_WIDTH].collisions = 0;
-                start_rays[x + y*GAME_RES_WIDTH].colour = 0;
+                start_rays[index].dir.x *= ray_dir_normalise_factors[index];
+                start_rays[index].dir.y *= ray_dir_normalise_factors[index];
+                start_rays[index].dir.z *= ray_dir_normalise_factors[index];
+
+                start_rays[index].inv_dir.x = 1.f / start_rays[index].dir.x;
+                start_rays[index].inv_dir.y = 1.f / start_rays[index].dir.y;
+                start_rays[index].inv_dir.z = 1.f / start_rays[index].dir.z;
+
+                start_rays[index].collisions = 0;
+                start_rays[index].colour = 0;
             }
             if (camera_moved_xz || camera_rotated) {
-                start_rays[x + y*GAME_RES_WIDTH].pos.x = start_rays[x + y*GAME_RES_WIDTH].dir.x + camera.pos.x;
-                start_rays[x + y*GAME_RES_WIDTH].pos.z = start_rays[x + y*GAME_RES_WIDTH].dir.z + camera.pos.z;
+                start_rays[index].pos.x = start_rays[index].dir.x/ray_dir_normalise_factors[index] + camera.pos.x;
+                start_rays[index].pos.z = start_rays[index].dir.z/ray_dir_normalise_factors[index] + camera.pos.z;
             }
             if (camera_moved_y || camera_rotated) {
-                start_rays[x + y*GAME_RES_WIDTH].pos.y = start_rays[x + y*GAME_RES_WIDTH].dir.y + camera.pos.y;
+                start_rays[index].pos.y = start_rays[index].dir.y/ray_dir_normalise_factors[index] + camera.pos.y;
             }
         }
     }
@@ -570,9 +576,8 @@ uint64_t create_brick(uint32_t scale, size_t brick_index, size_t* next_brick_ind
                         brick_array[brick_index].occupancy |= (uint64_t)1<<(x + (y<<2) + (z<<4));
                     }
                 } else {
-                    if (create_brick(scale >> 2, brick_array[brick_index].brick_array_index + x + (y<<2) + (z<<4), next_brick_index, next_voxel_index, (pos_x<<2)|x, (pos_y<<2)|y, (pos_z<<2)|z)) {
-                        if (rand() % 2 != 0)
-                            brick_array[brick_index].occupancy |= (uint64_t)1<<(x + (y<<2) + (z<<4));
+                    if (rand() % 2 != 0 && create_brick(scale >> 2, brick_array[brick_index].brick_array_index + x + (y<<2) + (z<<4), next_brick_index, next_voxel_index, (pos_x<<2)|x, (pos_y<<2)|y, (pos_z<<2)|z)) {
+                        brick_array[brick_index].occupancy |= (uint64_t)1<<(x + (y<<2) + (z<<4));
                     }
                 }
             }
@@ -611,25 +616,32 @@ void create_world() {
 }
 
 
-void fill_ray_pos_arrays() {
+void init_ray_arrays() {
     for (int x = 0; x < GAME_RES_WIDTH; x++) {
         ray_x_pos_array[x] = (float)(x - GAME_RES_WIDTH/2.0)/SCREEN_SCALING_FACTOR;
     }
     for (int y = 0; y < GAME_RES_HEIGHT; y++) {
         ray_y_pos_array[y] = (float)(y - GAME_RES_HEIGHT/2.0)/SCREEN_SCALING_FACTOR;
     }
+    for (int y = 0; y < GAME_RES_HEIGHT; y++) {
+        for (int x = 0; x < GAME_RES_WIDTH; x++) {
+            ray_dir_normalise_factors[x + y*GAME_RES_WIDTH] = 1.f / sqrtf(ray_x_pos_array[x]*ray_x_pos_array[x]
+                                                                        + ray_y_pos_array[y]*ray_y_pos_array[y]
+                                                                        + camera.focal_point*camera.focal_point);
+        }
+    }
 }
 
 int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, int CmdShow) {
-    fill_ray_pos_arrays();
-    create_world();
-
     camera = (Camera){(float3){WORLD_SCALE>>1, WORLD_SCALE>>1, WORLD_SCALE>>1}, 0, 0, 0, 0, 0, 0, 2.0944, 0};
     camera.cos_pitch = cos(camera.pitch);
     camera.sin_pitch = sin(camera.pitch);
     camera.cos_yaw = cos(camera.yaw);
     camera.sin_yaw = sin(camera.yaw);
     camera.focal_point = GAME_RES_WIDTH/2.0/tan(camera.fov/2.0)/SCREEN_SCALING_FACTOR;
+
+    init_ray_arrays();
+    create_world();
 
     update_start_rays(1, 1, 1);
 
