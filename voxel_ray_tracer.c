@@ -21,7 +21,7 @@
 #define WORLD_SCALE     1024
 #define LOG_WORLD_SCALE 10
 
-#define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/2.0)
+#define SCREEN_SCALING_FACTOR (GAME_RES_WIDTH/2.f)
 
 #define pixel(x, y, colour) *((uint32_t*)buffer.memory + x + y*GAME_RES_WIDTH) = colour
 
@@ -53,7 +53,7 @@ typedef struct {
     float cos_pitch, sin_pitch;
     float cos_yaw, sin_yaw;
     float fov;
-    float focal_point;
+    float focal_length;
 } Camera;
 
 typedef struct Voxel {
@@ -95,7 +95,8 @@ float ray_x_pos_array[GAME_RES_WIDTH];
 float ray_y_pos_array[GAME_RES_HEIGHT];
 
 Ray start_rays[GAME_RES_WIDTH*GAME_RES_HEIGHT];
-float ray_dir_normalise_factors[GAME_RES_WIDTH*GAME_RES_HEIGHT];
+
+float depth_buffer[GAME_RES_WIDTH*GAME_RES_HEIGHT/4];
 
 int32_t height_map[WORLD_SCALE*WORLD_SCALE];
 
@@ -173,14 +174,10 @@ void update_start_rays(char camera_moved_xz, char camera_moved_y, char camera_ro
 
                 start_rays[index].dir.x = ray_x_pos_array[x];
                 start_rays[index].dir.y = ray_y_pos_array[y];
-                start_rays[index].dir.z = -camera.focal_point;
+                start_rays[index].dir.z = -camera.focal_length;
 
                 start_rays[index] = rotate_pitch(start_rays[index], camera);
                 start_rays[index] = rotate_yaw(start_rays[index], camera);
-
-                start_rays[index].dir.x *= ray_dir_normalise_factors[index];
-                start_rays[index].dir.y *= ray_dir_normalise_factors[index];
-                start_rays[index].dir.z *= ray_dir_normalise_factors[index];
 
                 start_rays[index].inv_dir.x = 1.f / start_rays[index].dir.x;
                 start_rays[index].inv_dir.y = 1.f / start_rays[index].dir.y;
@@ -190,11 +187,11 @@ void update_start_rays(char camera_moved_xz, char camera_moved_y, char camera_ro
                 start_rays[index].colour = 0;
             }
             if (camera_moved_xz || camera_rotated) {
-                start_rays[index].pos.x = start_rays[index].dir.x/ray_dir_normalise_factors[index] + camera.pos.x;
-                start_rays[index].pos.z = start_rays[index].dir.z/ray_dir_normalise_factors[index] + camera.pos.z;
+                start_rays[index].pos.x = start_rays[index].dir.x + camera.pos.x;
+                start_rays[index].pos.z = start_rays[index].dir.z + camera.pos.z;
             }
             if (camera_moved_y || camera_rotated) {
-                start_rays[index].pos.y = start_rays[index].dir.y/ray_dir_normalise_factors[index] + camera.pos.y;
+                start_rays[index].pos.y = start_rays[index].dir.y + camera.pos.y;
             }
         }
     }
@@ -226,7 +223,7 @@ void update() {
     if (q) speed = 0;
     if (e) speed = 1;
     if (f) speed = 2;
-    float v = (speed == 1) ? WORLD_SCALE*0.0125f : (speed == 0) ? WORLD_SCALE*0.003375f : WORLD_SCALE*0.05f;
+    float v = (speed == 1) ? WORLD_SCALE*0.00625f : (speed == 0) ? 2.f : WORLD_SCALE*0.05f;
 
     if (escape_key) SendMessageA(windowHandle, WM_SIZE, 0, 0);
 
@@ -320,6 +317,12 @@ float3 get_normal(Ray ray) {
 
 extern inline float colour_from_ray(Ray ray) {
     float3 normal = get_normal(ray);
+    if (normal.x == 0 && normal.y == 0 && normal.z == 0) return 0;
+    if (normal.y == 1) return 1.f;
+    if (normal.y == -1) return 0.5f;
+    if (normal.x) return 0.6f;
+    return 0.8f;
+    /*
     float dot_product = (light_height - ray.pos.x) * normal.x
                         + ((WORLD_SCALE>>1) - ray.pos.y) * normal.y
                         + (light_height - ray.pos.z) * normal.z;
@@ -327,6 +330,7 @@ extern inline float colour_from_ray(Ray ray) {
                                 ((WORLD_SCALE>>1) - ray.pos.y),
                                 (light_height - ray.pos.z));
     return dot_product*0.5f + 0.5f;
+    */
 }
 
 extern inline uint32_t scale_colour(uint32_t c, float scaler) {
@@ -365,7 +369,7 @@ uint64_t potential_occupancy_mask(uint8_t sub_brick_index, float3 inv_dir) {
     return mask_x & mask_y & mask_z;
 }
 
-void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t log_scale) {
+float traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t log_scale) {
 
     uint32_t init_x = (uint32_t)ray->pos.x & (-scale);
     uint32_t init_y = (uint32_t)ray->pos.y & (-scale);
@@ -436,39 +440,39 @@ void traverse_brick(Ray* ray, uint64_t brick_index, uint32_t scale, uint8_t log_
                 ray->collisions++;
                 ray->colour = voxel_array[brick_array[brick_index].voxel_array_index + sub_brick_index].colour;
                 ray->colour = scale_colour(ray->colour, colour_from_ray(*ray));
-                return;
+                return curr_t;
             } else {
-                traverse_brick(ray, brick_array[brick_index].brick_array_index + sub_brick_index, scale>>2, log_scale-2);
-                if (ray->collisions >= 1) return;
+                float new_t = traverse_brick(ray, brick_array[brick_index].brick_array_index + sub_brick_index, scale>>2, log_scale-2);
+                if (ray->collisions >= 1) return curr_t + new_t;
             }
         }
         
         if (next_t.x <= next_t.y && next_t.x <= next_t.z) {
             x += step.x;
-            if (((x + edge_offset.x) & (3*scale)) == 0) return;
+            curr_t = next_t.x;
+            if (((x + edge_offset.x) & (3*scale)) == 0) return curr_t;
             last_step = 1;
             sub_brick_index += sub_brick_index_step_x;
-            curr_t = next_t.x;
             next_t.x += t_step.x;
         } else if (next_t.y <= next_t.z) {
             y += step.y;
-            if (((y + edge_offset.y) & (3*scale)) == 0) return;
+            curr_t = next_t.y;
+            if (((y + edge_offset.y) & (3*scale)) == 0) return curr_t;
             last_step = 2;
             sub_brick_index += sub_brick_index_step_y;
-            curr_t = next_t.y;
             next_t.y += t_step.y;
         } else {
             z += step.z;
-            if (((z + edge_offset.z) & (3*scale)) == 0) return;
+            curr_t = next_t.z;
+            if (((z + edge_offset.z) & (3*scale)) == 0) return curr_t;
             last_step = 3;
             sub_brick_index += sub_brick_index_step_z;
-            curr_t = next_t.z;
             next_t.z += t_step.z;
         }
     }
 }
 
-int advance_ray_into_world(Ray* ray) {
+int advance_ray_into_world(Ray* ray, float* t) {
     float3 edge_0_t;
     edge_0_t.x = -ray->pos.x * ray->inv_dir.x;
     edge_0_t.y = -ray->pos.y * ray->inv_dir.y;
@@ -499,6 +503,7 @@ int advance_ray_into_world(Ray* ray) {
     ray->pos.y += (t_first_edge + 0.001) * ray->dir.y;
     ray->pos.z += (t_first_edge + 0.001) * ray->dir.z;
 
+    *t += t_first_edge;
     return 1;
 }
 
@@ -511,15 +516,38 @@ int out_of_world(Ray* ray) {
         || (ray->pos.z == (WORLD_SCALE) && ray->dir.z > 0) || (ray->pos.z == 0 && ray->dir.z < 0);
 }
 
-uint32_t render_pixel(int screen_x, int screen_y, Camera c) {
+uint32_t render_pixel(int x, int y, Camera c, int pass_num, float max_depth) {
+    Ray ray = start_rays[x + y*GAME_RES_WIDTH];
 
-    Ray ray = start_rays[screen_x + screen_y*GAME_RES_WIDTH];
+    float depth = 0.f;
 
-    if (out_of_world(&ray) && !advance_ray_into_world(&ray)) {
+    if (pass_num == 1) {
+        float depth_0 = depth_buffer[(x>>1) + (y>>1)*(GAME_RES_WIDTH>>1)];
+        float depth_1 = depth_buffer[(x>>1) + (y>>1)*(GAME_RES_WIDTH>>1)];
+        if (x != GAME_RES_WIDTH-1) depth_1 = depth_buffer[(x>>1)+1 + (y>>1)*(GAME_RES_WIDTH>>1)];
+        float depth_2 = depth_buffer[(x>>1) + (y>>1)*(GAME_RES_WIDTH>>1)];
+        if (y != GAME_RES_HEIGHT-1) depth_2 = depth_buffer[(x>>1) + ((y>>1)+1)*(GAME_RES_WIDTH>>1)];
+        float depth_3 = depth_buffer[(x>>1) + (y>>1)*(GAME_RES_WIDTH>>1)];
+        if (x != GAME_RES_WIDTH-1 && y != GAME_RES_HEIGHT-1) depth_3 = depth_buffer[(x>>1)+1 + ((y>>1)+1)*(GAME_RES_WIDTH>>1)];
+        depth = fminf(fminf(depth_0, depth_1), fminf(depth_2, depth_3)) - 1.f;
+        if (depth < 0) depth = 0;
+
+        if (depth > max_depth) depth = max_depth;
+
+        ray.pos.x += depth*ray.dir.x;
+        ray.pos.y += depth*ray.dir.y;
+        ray.pos.z += depth*ray.dir.z;
+    }
+
+    if (out_of_world(&ray) && !advance_ray_into_world(&ray, &depth)) {
         return SKY;
     }
 
-    traverse_brick(&ray, 0, WORLD_SCALE>>2, LOG_WORLD_SCALE-2);
+    depth += traverse_brick(&ray, 0, WORLD_SCALE>>2, LOG_WORLD_SCALE-2);
+
+    if (pass_num == 0) {
+        depth_buffer[(x>>1) + (y>>1)*(GAME_RES_WIDTH>>1)] = depth;
+    }
 
     if (ray.collisions == 0) return SKY;
 
@@ -527,9 +555,16 @@ uint32_t render_pixel(int screen_x, int screen_y, Camera c) {
 }
 
 void render_world(Camera c) {
+    for (int y = 0; y < GAME_RES_HEIGHT>>1; y++) {
+        for (int x = 0; x < GAME_RES_WIDTH>>1; x++) {
+            pixel((x<<1), (y<<1), render_pixel(x<<1, y<<1, c, 0, 0.f));
+        }
+    }
+    float max_depth = SCREEN_SCALING_FACTOR*0.5f - 1.f;
     for (int y = 0; y < GAME_RES_HEIGHT; y++) {
         for (int x = 0; x < GAME_RES_WIDTH; x++) {
-            pixel(x, y, render_pixel(x, y, c));
+            if (x % 2 != 0 || y % 2 != 0)
+                pixel(x, y, render_pixel(x, y, c, 1, max_depth));
         }
     }
 }
@@ -569,14 +604,28 @@ uint64_t create_brick(uint32_t scale, size_t brick_index, size_t* next_brick_ind
             for (uint8_t x = 0; x < 4; x++) {
                 if (scale == 1) {
                     int32_t c = get_voxel_colour((pos_x<<2)|x, (pos_y<<2)|y, (pos_z<<2)|z);
+                    int num = 2;
+                    if (scale == WORLD_SCALE>>2)
+                        num = 4;
+                    if (rand() % num != 0) {
+                        voxel_array[brick_array[brick_index].voxel_array_index + x + (y<<2) + (z<<4)] = (Voxel){c};
+                        brick_array[brick_index].occupancy |= (uint64_t)1<<(x + (y<<2) + (z<<4));
+                    } else {
+                        voxel_array[brick_array[brick_index].voxel_array_index + x + (y<<2) + (z<<4)] = (Voxel){0};
+                    }
+                    /*
                     if (c == -1) {
                         voxel_array[brick_array[brick_index].voxel_array_index + x + (y<<2) + (z<<4)] = (Voxel){0};
                     } else {
                         voxel_array[brick_array[brick_index].voxel_array_index + x + (y<<2) + (z<<4)] = (Voxel){c};
                         brick_array[brick_index].occupancy |= (uint64_t)1<<(x + (y<<2) + (z<<4));
                     }
+                    */
                 } else {
-                    if (rand() % 2 != 0 && create_brick(scale >> 2, brick_array[brick_index].brick_array_index + x + (y<<2) + (z<<4), next_brick_index, next_voxel_index, (pos_x<<2)|x, (pos_y<<2)|y, (pos_z<<2)|z)) {
+                    int num = 2;
+                    if (scale == WORLD_SCALE>>2)
+                        num = 4;
+                    if (rand() % num != 0 && create_brick(scale >> 2, brick_array[brick_index].brick_array_index + x + (y<<2) + (z<<4), next_brick_index, next_voxel_index, (pos_x<<2)|x, (pos_y<<2)|y, (pos_z<<2)|z)) {
                         brick_array[brick_index].occupancy |= (uint64_t)1<<(x + (y<<2) + (z<<4));
                     }
                 }
@@ -623,13 +672,6 @@ void init_ray_arrays() {
     for (int y = 0; y < GAME_RES_HEIGHT; y++) {
         ray_y_pos_array[y] = (float)(y - GAME_RES_HEIGHT/2.0)/SCREEN_SCALING_FACTOR;
     }
-    for (int y = 0; y < GAME_RES_HEIGHT; y++) {
-        for (int x = 0; x < GAME_RES_WIDTH; x++) {
-            ray_dir_normalise_factors[x + y*GAME_RES_WIDTH] = 1.f / sqrtf(ray_x_pos_array[x]*ray_x_pos_array[x]
-                                                                        + ray_y_pos_array[y]*ray_y_pos_array[y]
-                                                                        + camera.focal_point*camera.focal_point);
-        }
-    }
 }
 
 int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, int CmdShow) {
@@ -638,7 +680,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
     camera.sin_pitch = sin(camera.pitch);
     camera.cos_yaw = cos(camera.yaw);
     camera.sin_yaw = sin(camera.yaw);
-    camera.focal_point = GAME_RES_WIDTH/2.0/tan(camera.fov/2.0)/SCREEN_SCALING_FACTOR;
+    camera.focal_length = GAME_RES_WIDTH/2.0/tan(camera.fov/2.0)/SCREEN_SCALING_FACTOR;
 
     init_ray_arrays();
     create_world();
@@ -703,6 +745,8 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PSTR CmdLine, i
     UpdateWindow(windowHandle);
 
     hdc = GetDC(windowHandle);
+
+    SetStretchBltMode(hdc, COLORONCOLOR);
 
     running = 1;
     MSG Msg;
